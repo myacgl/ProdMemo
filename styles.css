@@ -131,22 +131,6 @@
     color: #27ae60 !important;
 }
 
-/* Expand table container to show the new column */
-.alphas-list-table {
-    width: calc(100% + 100px) !important;
-    max-width: none !important;
-}
-
-.competition__honor {
-    width: calc(100% + 100px) !important;
-    max-width: none !important;
-}
-
-/* Ensure table is scrollable if needed */
-.rt-table {
-    min-width: calc(1170px + 100px) !important;
-}
-
 /* Truncate long alpha titles in detail page header */
 .alphas-details-content__header-title {
     max-width: 60% !important;
