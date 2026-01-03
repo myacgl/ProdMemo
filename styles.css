@@ -1,0 +1,108 @@
+/* Premium Glassmorphism Card -> Pure Black Full Width */
+.prod-memo-card {
+    background: #000000;
+    /* Pure Black */
+    border: 1px solid #333;
+    border-left: 4px solid #00dbb5;
+    /* Neon Green */
+    border-radius: 4px;
+    margin-top: 15px;
+    padding: 16px;
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    color: #f0f0f0;
+    width: 100%;
+    /* Full Width */
+    max-width: none;
+    animation: memoFadeIn 0.4s ease-out;
+    position: relative;
+    z-index: 1000;
+}
+
+@keyframes memoFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Header Section */
+.memo-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.memo-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.memo-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #00dbb5;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.memo-badge {
+    background: rgba(0, 219, 181, 0.2);
+    color: #00dbb5;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.memo-time {
+    font-size: 12px;
+    color: #fff;
+}
+
+/* Stats Section */
+.memo-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.stat-item {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 10px;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.stat-label {
+    font-size: 12px;
+    color: #fff;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+}
+
+.stat-value {
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.stat-value.positive {
+    color: #00dbb5;
+}
+
+.stat-value.negative {
+    color: #ff4757;
+}
+
+/* Actions (Hidden/Removed for now) */
+.memo-actions {
+    display: none;
+}

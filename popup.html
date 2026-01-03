@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>ProdMemo Data</title>
+  <style>
+    body {
+      width: 300px;
+      padding: 15px;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f4f4f4;
+      color: #333;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    h3 {
+      margin-top: 0;
+      color: #00bc8c;
+      border-bottom: 2px solid #ddd;
+      padding-bottom: 10px;
+    }
+
+    .stats {
+      margin-bottom: 15px;
+      font-size: 14px;
+    }
+
+    .data-list {
+      max-height: 200px;
+      overflow-y: auto;
+      margin-bottom: 10px;
+      background: white;
+      border-radius: 4px;
+      padding: 8px;
+    }
+
+    .data-item {
+      padding: 6px;
+      margin-bottom: 4px;
+      background: #f9f9f9;
+      border-left: 3px solid #00bc8c;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+
+    .data-item .alpha-id {
+      font-weight: bold;
+      color: #00bc8c;
+      word-break: break-all;
+    }
+
+    .data-item .timestamp {
+      font-size: 10px;
+      color: #999;
+    }
+
+    .data-item .values {
+      font-size: 11px;
+      color: #555;
+      margin-top: 2px;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: #999;
+      padding: 20px;
+      font-size: 12px;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px;
+      margin-bottom: 5px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: background-color 0.2s;
+    }
+
+    .btn-export {
+      background-color: #00bc8c;
+      color: white;
+    }
+
+    .btn-export:hover {
+      background-color: #008f6b;
+    }
+
+    .btn-import {
+      background-color: #3498db;
+      color: white;
+    }
+
+    .btn-import:hover {
+      background-color: #2980b9;
+    }
+
+    .btn-clear {
+      background-color: #e74c3c;
+      color: white;
+      margin-top: 5px;
+    }
+
+    .btn-clear:hover {
+      background-color: #c0392b;
+    }
+
+    #status {
+      margin-top: 10px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+      min-height: 16px;
+    }
+  </style>
+</head>
+
+<body>
+  <h3>ProdMemo</h3>
+  <div class="stats">
+    Records cached: <strong id="record-count">...</strong>
+  </div>
+
+  <div id="data-list" class="data-list"></div>
+
+  <button id="export-btn" class="btn-export">📥 Export JSON</button>
+  <button id="import-btn" class="btn-import">📤 Import JSON</button>
+  <button id="clear-btn" class="btn-clear">🗑️ Clear Data</button>
+  <input type="file" id="import-file" accept=".json" style="display: none;">
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+
+</html>

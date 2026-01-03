@@ -1,0 +1,41 @@
+{
+    "manifest_version": 3,
+    "name": "ProdMemo",
+    "version": "1.0",
+    "description": "Caches and displays Prod Correlation results for WorldQuant Brain alphas.",
+    "permissions": [
+        "storage",
+        "downloads"
+    ],
+    "action": {
+        "default_popup": "popup.html"
+    },
+    "host_permissions": [
+        "*://*.worldquantbrain.com/*"
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "inject.js",
+                "styles.css"
+            ],
+            "matches": [
+                "*://*.worldquantbrain.com/*"
+            ]
+        }
+    ],
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.worldquantbrain.com/*"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "css": [
+                "styles.css"
+            ],
+            "run_at": "document_start"
+        }
+    ]
+}
