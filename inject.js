@@ -68,6 +68,32 @@
                 }, '*');
             }
 
+            // 3. Intercept Alpha List API to display correlations in table
+            // Pattern: .../users/self/alphas?...
+            if (url.includes('/users/self/alphas') && !url.includes('/alphas/')) {
+                console.log('[ProdMemo] Detected Alpha List API:', url);
+
+                if (response.ok && response.status !== 204) {
+                    try {
+                        const clone = response.clone();
+                        clone.json().then(data => {
+                            if (data.results && Array.isArray(data.results)) {
+                                const alphaIds = data.results.map(r => r.id);
+                                console.log(`[ProdMemo] Extracted ${alphaIds.length} alpha IDs from list`);
+                                window.postMessage({
+                                    type: 'PROD_MEMO_LIST',
+                                    alphaIds: alphaIds
+                                }, '*');
+                            }
+                        }).catch(err => {
+                            console.warn('[ProdMemo] Error parsing list JSON', err);
+                        });
+                    } catch (cloneErr) {
+                        console.warn('[ProdMemo] Error cloning list response', cloneErr);
+                    }
+                }
+            }
+
         } catch (e) {
             console.error('[ProdMemo] Error in fetch interceptor', e);
         }
