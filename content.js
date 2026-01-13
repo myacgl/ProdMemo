@@ -116,14 +116,19 @@ setInterval(() => {
     if (!contextValid) return; // Stop if context is invalid
 
     const urlAlphaId = getAlphaFromUrl();
+    // Check for both /alpha/ (singular) and /alphas/ (plural)
+    const isOnAlphaPage = window.location.href.includes('/alpha/') || window.location.href.includes('/alphas/');
 
-    // Only cleanup when navigating away from alpha pages entirely
-    if (!urlAlphaId && currentAlphaId) {
-        // If URL no longer has an alpha ID and we have an active card
-        if (!window.location.href.includes('/alphas/')) {
-            console.log('[ProdMemo] Navigated away from Alphas. Cleaning up.');
-            cleanupCard();
-        }
+    // Debug logging
+    if (currentAlphaId) {
+        console.log('[ProdMemo] Cleanup check:', { urlAlphaId, currentAlphaId, isOnAlphaPage, href: window.location.href });
+    }
+
+    // Only cleanup when definitively navigating away from alpha pages
+    // Be conservative: only cleanup if we're NOT on an alpha page at all
+    if (currentAlphaId && !isOnAlphaPage) {
+        console.log('[ProdMemo] Navigated away from Alphas. Cleaning up.');
+        cleanupCard();
     }
 }, 2000);
 
@@ -152,8 +157,8 @@ if (document.body) {
 // Let's stick to the event trigger as requested.
 
 function getAlphaFromUrl() {
-    // Pattern: .../alphas/{alphaID}
-    const match = window.location.href.match(/alphas\/([^/?#]+)/);
+    // Pattern: .../alpha/{alphaID} or .../alphas/{alphaID}
+    const match = window.location.href.match(/\/alphas?\/([^/?#]+)/);
     return match ? match[1] : null;
 }
 
@@ -287,24 +292,49 @@ async function tryRenderMemo(alphaId) {
 function injectUI(cachedData) {
     if (document.getElementById('prod-memo-card')) return true;
 
-    // Finding injection target
-    // Robust search: Look for ANY element containing "Prod Correlation" (case insensitive)
-    const allElements = Array.from(document.body.querySelectorAll('*'));
-    const targetHeader = allElements.find(el => {
-        if (!el.innerText) return false;
-        if (el.offsetParent === null) return false; // Check visibility
+    // Finding injection target - look for "Prod Correlation" section
+    // First try: Find by specific selector for the correlation content section
+    let targetContainer = document.querySelector('.correlation__content');
 
-        const text = el.innerText.toLowerCase();
-        const matches = text.includes('prod correlation') || text.includes('production correlation');
-        if (!matches) return false;
+    if (targetContainer) {
+        // Find the one that contains "Prod Correlation"
+        const correlationSections = document.querySelectorAll('.correlation__content');
+        for (const section of correlationSections) {
+            if (section.textContent.includes('Prod Correlation')) {
+                targetContainer = section;
+                console.log('[ProdMemo] Found Prod Correlation section by class selector');
+                break;
+            }
+        }
+    }
 
-        if (el.closest('#prod-memo-card')) return false;
+    // Fallback: Search by text content
+    if (!targetContainer || !targetContainer.textContent.includes('Prod Correlation')) {
+        console.log('[ProdMemo] Trying fallback text search...');
+        const allElements = Array.from(document.body.querySelectorAll('*'));
+        const targetHeader = allElements.find(el => {
+            if (!el.innerText) return false;
+            if (el.offsetParent === null) return false; // Check visibility
 
-        // heuristic: The element should be relatively small
-        return el.innerText.length < 100;
-    });
+            const text = el.innerText.toLowerCase();
+            const matches = text.includes('prod correlation') || text.includes('production correlation');
+            if (!matches) return false;
 
-    if (!targetHeader) {
+            if (el.closest('#prod-memo-card')) return false;
+
+            // Accept elements with "Prod Correlation" text, even if they're large
+            return el.tagName === 'SPAN' || el.classList.contains('correlation__content-status-title') || el.innerText.length < 100;
+        });
+
+        if (targetHeader) {
+            // Find the parent content section
+            targetContainer = targetHeader.closest('.correlation__content') || targetHeader.closest('.correlation__content-status') || targetHeader.parentElement;
+            console.log('[ProdMemo] Found target via text search');
+        }
+    }
+
+    if (!targetContainer) {
+        console.warn('[ProdMemo] Could not find Prod Correlation section');
         return false;
     }
 
@@ -338,8 +368,9 @@ function injectUI(cachedData) {
         </div>
     `;
 
-    // Append to parent of header
-    targetHeader.parentElement.appendChild(card);
+    // Append to the correlation content container
+    targetContainer.appendChild(card);
+    console.log('[ProdMemo] Card injected successfully');
     return true;
 }
 
@@ -367,55 +398,112 @@ function injectListCorrelations(alphaIds, cachedData) {
 }
 
 function injectListCorrelationsOnce(alphaIds, cachedData) {
-    // Find all table header rows (there are multiple: headerGroups, header, filters)
+    console.log('[ProdMemo] Starting list injection', { alphaCount: alphaIds.length, cachedKeys: Object.keys(cachedData) });
+
+    // Find the header groups row (the one with column names)
     const headerGroups = document.querySelector('.rt-thead.-headerGroups .rt-tr');
     if (!headerGroups) {
+        console.warn('[ProdMemo] Header groups row not found');
         return false;
     }
 
-    // Add header cell to the main header row if not already present
-    if (!headerGroups.querySelector('.prod-corr-header')) {
-        const headerCell = createListHeaderCell();
-        headerGroups.appendChild(headerCell);
+    // Find and replace Book Size header with Max Prod Corr
+    // DEBUG: Log all headers to find Book Size
+    console.log('[ProdMemo] Exploring header structure...');
+    const allHeaders = headerGroups.querySelectorAll('.rt-th');
+    allHeaders.forEach((header, idx) => {
+        const sortElement = header.querySelector('[class*="table__sort"]');
+        console.log(`Header ${idx}:`, {
+            text: header.textContent.trim(),
+            classes: header.className,
+            sortClasses: sortElement?.className
+        });
+    });
+
+    let bookSizeHeader = headerGroups.querySelector('.table__sort--bookSize');
+
+    // Fallback: search by text content
+    if (!bookSizeHeader) {
+        console.log('[ProdMemo] Trying to find Book Size header by text content...');
+        allHeaders.forEach(header => {
+            if (header.textContent.trim().toLowerCase().includes('book size')) {
+                bookSizeHeader = header.querySelector('.table__sort') || header;
+                console.log('[ProdMemo] Found Book Size by text, classes:', bookSizeHeader?.className);
+            }
+        });
     }
 
-    // Also add empty cells to other header rows for proper alignment
-    const otherHeaderRows = document.querySelectorAll('.rt-thead.-header .rt-tr, .rt-thead.-filters .rt-tr');
-    otherHeaderRows.forEach(row => {
-        if (!row.querySelector('.prod-corr-placeholder')) {
-            const placeholder = document.createElement('div');
-            placeholder.className = 'rt-th prod-corr-placeholder';
-            placeholder.setAttribute('role', 'columnheader');
-            placeholder.setAttribute('tabindex', '-1');
-            placeholder.style.cssText = 'flex: 100 0 auto; width: 100px; max-width: 100px;';
-            row.appendChild(placeholder);
-        }
-    });
+    console.log('[ProdMemo] Book Size header found:', !!bookSizeHeader);
+
+    if (bookSizeHeader && !bookSizeHeader.classList.contains('prod-corr-replaced')) {
+        // Find the parent div that contains the sort element
+        const sortDiv = bookSizeHeader;
+        sortDiv.textContent = 'Max Prod Corr';
+        sortDiv.style.fontWeight = '600';
+        sortDiv.style.color = '#fff';
+        sortDiv.classList.add('prod-corr-replaced');
+        // Remove sort-related classes to prevent clicking
+        sortDiv.classList.remove('table__sort', 'table__sort--bookSize');
+        console.log('[ProdMemo] Header replaced successfully');
+    }
+
+    // First, verify that this list actually HAS a Book Size column
+    // Look for the header (either original or already replaced)
+    const bookSizeHeaderCheck = headerGroups.querySelector('.table__sort--bookSize') ||
+        headerGroups.querySelector('.prod-corr-replaced');
+    if (!bookSizeHeaderCheck) {
+        console.log('[ProdMemo] This list does not have a Book Size column, skipping injection');
+        return false;
+    }
 
     // Find all data rows
     const dataRows = document.querySelectorAll('.rt-tbody .rt-tr-group .rt-tr');
+    console.log('[ProdMemo] Data rows found:', dataRows.length);
+
     if (dataRows.length === 0) {
         return false;
     }
 
-    // Inject correlation data for each row at the end
+    // Inject correlation data for each row by replacing Book Size cells
+    // ONLY replace cells that actually have the bookSize class
+    let replacedCount = 0;
     dataRows.forEach((row, index) => {
         if (index >= alphaIds.length) return;
 
         const alphaId = alphaIds[index];
         const data = cachedData[`prod_memo_${alphaId}`];
 
-        // Remove existing cell if present (for refresh)
-        const existingCell = row.querySelector('.prod-corr-cell');
-        if (existingCell) {
-            existingCell.remove();
+        // Find the Book Size cell content - STRICT: only by class selector
+        const bookSizeCell = row.querySelector('.alphas-list-table__cell-content--bookSize');
+
+        if (!bookSizeCell) {
+            if (index === 0) {
+                console.log('[ProdMemo] No Book Size cell found in first row, list structure may not support this feature');
+            }
+            return;
         }
 
-        // Create and append new cell at the end
-        const dataCell = createListDataCell(data);
-        row.appendChild(dataCell);
+        const value = data?.result?.max;
+        let displayValue = '-';
+        let colorClass = '';
+
+        if (value !== undefined) {
+            displayValue = value.toFixed(4);
+            // Red for high correlation (bad), green for low (good)
+            colorClass = value > 0.7 ? 'high-corr' : (value > 0.5 ? 'medium-corr' : 'low-corr');
+        }
+
+        // Replace the content and update class - KEEP bookSize class to avoid breaking selector
+        bookSizeCell.className = `alphas-list-table__cell-content alphas-list-table__cell-content--number alphas-list-table__cell-content--bookSize prod-corr-replaced ${colorClass}`;
+        bookSizeCell.innerHTML = `<div>${displayValue}</div>`;
+        replacedCount++;
+
+        if (index < 3 || replacedCount <= 3) {
+            console.log(`[ProdMemo] Row ${index} (${alphaId}): Replaced with ${displayValue} (${colorClass})`);
+        }
     });
 
+    console.log(`[ProdMemo] Successfully replaced ${replacedCount} cells`);
     return true;
 }
 
