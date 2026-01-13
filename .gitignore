@@ -1,0 +1,52 @@
+# OS Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Node modules (if any build tools are added later)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Archive and packaged files
+*.zip
+*.crx
+*.pem
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Build artifacts (if build process is added)
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+
+# macOS
+.AppleDouble
+.LSOverride
+
+# Windows
+ehthumbs.db
+$RECYCLE.BIN/
+
+# Testing
+coverage/
+.nyc_output/
+
+# Logs
+logs/
+*.log
