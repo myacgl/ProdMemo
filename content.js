@@ -12,10 +12,26 @@ let renderTimeout = null; // Debounce timeout
 let activeInterval = null; // Track active retry interval
 let contextValid = true; // Track if extension context is still valid
 let contextWarnedOnce = false; // Track if we've already warned about context invalidation
+let incrementalSyncRunning = false;
 
 // Detect extension context invalidation
 if (typeof chrome !== 'undefined' && chrome.runtime) {
-    chrome.runtime.onMessage.addListener(() => { });
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message?.type === 'PROD_MEMO_STOP_FULL_SYNC') {
+            window.postMessage({ type: 'PROD_MEMO_STOP_FULL_SYNC' }, '*');
+            sendResponse({ stopping: true });
+            return false;
+        }
+
+        if (message?.type !== 'PROD_MEMO_START_FULL_SYNC') return false;
+
+        window.postMessage({
+            type: 'PROD_MEMO_START_FULL_SYNC',
+            syncId: message.syncId
+        }, '*');
+        sendResponse({ started: true });
+        return false;
+    });
     // Test if context is valid
     try {
         chrome.runtime.getURL('');
@@ -29,6 +45,42 @@ if (typeof chrome !== 'undefined' && chrome.runtime) {
 window.addEventListener('message', async (event) => {
     if (!contextValid) return; // Stop if context is invalid
     if (event.source !== window) return;
+
+    if (event.data.type === 'PROD_MEMO_DB_REQUEST') {
+        const { requestId, action, payload } = event.data;
+        try {
+            const response = await chrome.runtime.sendMessage({
+                type: 'PROD_MEMO_DB',
+                action,
+                payload
+            });
+            window.postMessage({
+                type: 'PROD_MEMO_DB_RESPONSE',
+                requestId,
+                response
+            }, '*');
+        } catch (error) {
+            window.postMessage({
+                type: 'PROD_MEMO_DB_RESPONSE',
+                requestId,
+                response: { ok: false, error: error.message || String(error) }
+            }, '*');
+        }
+        return;
+    }
+
+    if (event.data.type === 'PROD_MEMO_SYNC_PROGRESS') {
+        updateIncrementalSyncButton(event.data.payload);
+        chrome.runtime.sendMessage({
+            type: 'PROD_MEMO_SYNC_PROGRESS',
+            payload: event.data.payload
+        }).catch(error => {
+            if (!error.message?.includes('Receiving end does not exist')) {
+                console.warn('[ProdMemo] Failed to forward sync progress:', error);
+            }
+        });
+        return;
+    }
 
     // DATA CAPTURE
     if (event.data.type === 'PROD_MEMO_DATA') {
@@ -115,14 +167,8 @@ window.addEventListener('message', async (event) => {
 setInterval(() => {
     if (!contextValid) return; // Stop if context is invalid
 
-    const urlAlphaId = getAlphaFromUrl();
     // Check for both /alpha/ (singular) and /alphas/ (plural)
     const isOnAlphaPage = window.location.href.includes('/alpha/') || window.location.href.includes('/alphas/');
-
-    // Debug logging
-    if (currentAlphaId) {
-        console.log('[ProdMemo] Cleanup check:', { urlAlphaId, currentAlphaId, isOnAlphaPage, href: window.location.href });
-    }
 
     // Only cleanup when definitively navigating away from alpha pages
     // Be conservative: only cleanup if we're NOT on an alpha page at all
@@ -138,15 +184,67 @@ const titleObserver = new MutationObserver(() => {
     if (titleElement && !titleElement.hasAttribute('title')) {
         titleElement.setAttribute('title', titleElement.textContent.trim());
     }
+    ensureIncrementalSyncButton();
 });
 
-// Start observing for title elements
-if (document.body) {
-    titleObserver.observe(document.body, {
-        childList: true,
-        subtree: true
+// content.js runs at document_start, when document.body may not exist yet.
+// Observe the Document itself so SPA-rendered correlation content is always detected.
+titleObserver.observe(document, {
+    childList: true,
+    subtree: true
+});
+document.addEventListener('DOMContentLoaded', ensureIncrementalSyncButton, { once: true });
+
+function ensureIncrementalSyncButton() {
+    if (!contextValid || document.getElementById('prod-memo-incremental-sync')) return;
+    const title = document.querySelector('#alphas-correlation .correlation__title');
+    if (!title) return;
+
+    title.style.display = 'flex';
+    title.style.alignItems = 'center';
+
+    const button = document.createElement('button');
+    button.id = 'prod-memo-incremental-sync';
+    button.className = 'prod-memo-sync-button';
+    button.type = 'button';
+    button.textContent = 'Sync Alpha Data';
+    button.addEventListener('click', () => {
+        if (incrementalSyncRunning) {
+            button.textContent = 'Stopping...';
+            window.postMessage({ type: 'PROD_MEMO_STOP_FULL_SYNC' }, '*');
+            return;
+        }
+        incrementalSyncRunning = true;
+        button.classList.add('is-running');
+        button.textContent = 'Checking...';
+        window.postMessage({ type: 'PROD_MEMO_START_INCREMENTAL_SYNC' }, '*');
     });
+    title.appendChild(button);
 }
+
+function updateIncrementalSyncButton(progress) {
+    if (progress?.mode !== 'incremental') return;
+    const button = document.getElementById('prod-memo-incremental-sync');
+    if (!button) return;
+
+    if (progress.phase === 'incremental-check') button.textContent = 'Checking...';
+    if (progress.phase === 'incremental-alphas') button.textContent = `New: ${progress.success || 0}`;
+    if (progress.phase === 'pnl-warmup') button.textContent = 'Syncing PnL...';
+    if (progress.phase === 'pnl-retry') button.textContent = `Retry PnL: ${progress.failed || 0}`;
+
+    if (progress.phase === 'incremental-completed' || progress.phase === 'error' || progress.phase === 'stopped') {
+        incrementalSyncRunning = false;
+        button.classList.remove('is-running');
+        button.textContent = progress.phase === 'incremental-completed'
+            ? (progress.added > 0 ? `Synced +${progress.added}` : 'Up to date')
+            : (progress.phase === 'stopped' ? 'Sync stopped' : 'Sync failed');
+        setTimeout(() => {
+            if (!incrementalSyncRunning && button.isConnected) button.textContent = 'Sync Alpha Data';
+        }, 3000);
+    }
+}
+
+ensureIncrementalSyncButton();
 
 // Initial check on load (in case we missed the Initial Request or it was cached by browser)
 // Actually user said: "Only show card when observing the request". 

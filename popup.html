@@ -27,6 +27,30 @@
       font-size: 14px;
     }
 
+    .sync-progress {
+      margin-bottom: 10px;
+      padding: 8px;
+      background: white;
+      border-radius: 4px;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-line;
+    }
+
+    .btn-sync {
+      background-color: #8e44ad;
+      color: white;
+    }
+
+    .btn-sync:hover {
+      background-color: #71368a;
+    }
+
+    .btn-sync:disabled {
+      background-color: #aaa;
+      cursor: not-allowed;
+    }
+
     .data-list {
       max-height: 200px;
       overflow-y: auto;
@@ -123,13 +147,19 @@
 
   <div class="stats">
     Records cached: <strong id="record-count">...</strong>
+    <br>IndexedDB Alphas: <strong id="alpha-count">...</strong>
+    <br>IndexedDB PnLs: <strong id="pnl-count">...</strong>
   </div>
+
+  <div id="sync-progress" class="sync-progress">Sync idle.</div>
 
   <div id="data-list" class="data-list"></div>
 
+  <button id="full-sync-btn" class="btn-sync">🔄 Full Alpha + PnL Sync</button>
   <button id="export-btn" class="btn-export">📥 Export JSON</button>
   <button id="import-btn" class="btn-import">📤 Import JSON</button>
   <button id="clear-btn" class="btn-clear">🗑️ Clear Data</button>
+  <button id="clear-indexeddb-btn" class="btn-clear">🗑️ Clear IndexedDB</button>
   <input type="file" id="import-file" accept=".json" style="display: none;">
   <div id="status"></div>
   <script src="popup.js"></script>

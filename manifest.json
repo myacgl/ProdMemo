@@ -5,8 +5,12 @@
     "description": "Caches and displays Prod Correlation results for WorldQuant Brain alphas.",
     "permissions": [
         "storage",
-        "downloads"
+        "downloads",
+        "activeTab"
     ],
+    "background": {
+        "service_worker": "background.js"
+    },
     "action": {
         "default_popup": "popup.html"
     },

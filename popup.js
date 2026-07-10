@@ -1,11 +1,57 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const countEl = document.getElementById('record-count');
+    const alphaCountEl = document.getElementById('alpha-count');
+    const pnlCountEl = document.getElementById('pnl-count');
+    const fullSyncBtn = document.getElementById('full-sync-btn');
+    const clearIndexedDbBtn = document.getElementById('clear-indexeddb-btn');
+    const syncProgressEl = document.getElementById('sync-progress');
     const exportBtn = document.getElementById('export-btn');
     const importBtn = document.getElementById('import-btn');
     const importFile = document.getElementById('import-file');
     const clearBtn = document.getElementById('clear-btn');
     const statusEl = document.getElementById('status');
     const dataListEl = document.getElementById('data-list');
+    let syncRunning = false;
+
+    function setSyncRunning(running) {
+        syncRunning = running;
+        fullSyncBtn.disabled = false;
+        fullSyncBtn.textContent = running ? '⏹ Stop Full Sync' : '🔄 Full Alpha + PnL Sync';
+    }
+
+    async function databaseAction(action, payload = {}) {
+        const response = await chrome.runtime.sendMessage({
+            type: 'PROD_MEMO_DB',
+            action,
+            payload
+        });
+        if (!response?.ok) throw new Error(response?.error || 'IndexedDB request failed');
+        return response.result;
+    }
+
+    async function renderIndexedDbStats() {
+        const stats = await databaseAction('GET_STATS');
+        alphaCountEl.textContent = stats.alphaCount;
+        pnlCountEl.textContent = stats.pnlCount;
+    }
+
+    chrome.runtime.onMessage.addListener(message => {
+        if (message?.type !== 'PROD_MEMO_SYNC_PROGRESS') return false;
+
+        const progress = message.payload;
+        if (progress.mode === 'incremental') return false;
+        syncProgressEl.textContent = progress.message || progress.phase;
+        if (progress.phase === 'alphas' || progress.phase === 'pnl' || progress.phase === 'pnl-warmup' || progress.phase === 'pnl-retry') {
+            const total = progress.total || '?';
+            syncProgressEl.textContent += `\n${progress.current || 0}/${total} · Success ${progress.success || 0} · Failed ${progress.failed || 0}`;
+            setSyncRunning(true);
+        }
+        if (progress.phase === 'completed' || progress.phase === 'error' || progress.phase === 'stopped') {
+            setSyncRunning(false);
+            renderIndexedDbStats().catch(console.error);
+        }
+        return false;
+    });
 
     // Function to get all ProdMemo data
     async function getStoredData() {
@@ -57,6 +103,37 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Initialize display
     await renderDataList();
+    try {
+        await renderIndexedDbStats();
+    } catch (error) {
+        alphaCountEl.textContent = 'Error';
+        pnlCountEl.textContent = 'Error';
+        console.error('[ProdMemo] Failed to read IndexedDB stats:', error);
+    }
+
+    fullSyncBtn.addEventListener('click', async () => {
+        try {
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (!tab?.id) throw new Error('No active tab found');
+
+            if (syncRunning) {
+                syncProgressEl.textContent = 'Stopping full sync...';
+                await chrome.tabs.sendMessage(tab.id, { type: 'PROD_MEMO_STOP_FULL_SYNC' });
+                return;
+            }
+
+            setSyncRunning(true);
+            syncProgressEl.textContent = 'Starting full sync in the active WQB tab...';
+            const response = await chrome.tabs.sendMessage(tab.id, {
+                type: 'PROD_MEMO_START_FULL_SYNC',
+                syncId: `${Date.now()}`
+            });
+            if (!response?.started) throw new Error('The WQB page did not start synchronization');
+        } catch (error) {
+            setSyncRunning(false);
+            syncProgressEl.textContent = `Start failed: ${error.message}. Open or refresh a WorldQuant BRAIN page and try again.`;
+        }
+    });
 
     // Export Handler
     exportBtn.addEventListener('click', async () => {
@@ -133,6 +210,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             statusEl.textContent = "All data cleared.";
             await renderDataList();
+        }
+    });
+
+    clearIndexedDbBtn.addEventListener('click', async () => {
+        if (!confirm('Delete all saved Alpha and PnL data from IndexedDB?')) return;
+
+        try {
+            await databaseAction('CLEAR_INDEXED_DB');
+            syncProgressEl.textContent = 'IndexedDB Alpha and PnL data cleared.';
+            await renderIndexedDbStats();
+        } catch (error) {
+            syncProgressEl.textContent = `IndexedDB clear failed: ${error.message}`;
         }
     });
 });

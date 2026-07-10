@@ -138,3 +138,21 @@
     text-overflow: ellipsis !important;
     white-space: nowrap !important;
 }
+.prod-memo-sync-button {
+    margin-left: auto;
+    padding: 5px 10px;
+    border: 1px solid #00bc8c;
+    border-radius: 4px;
+    background: transparent;
+    color: #00a97e;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.prod-memo-sync-button:hover,
+.prod-memo-sync-button.is-running {
+    background: #00bc8c;
+    color: #fff;
+}
