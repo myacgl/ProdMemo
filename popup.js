@@ -3,20 +3,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const alphaCountEl = document.getElementById('alpha-count');
     const pnlCountEl = document.getElementById('pnl-count');
     const fullSyncBtn = document.getElementById('full-sync-btn');
-    const clearIndexedDbBtn = document.getElementById('clear-indexeddb-btn');
     const syncProgressEl = document.getElementById('sync-progress');
     const exportBtn = document.getElementById('export-btn');
     const importBtn = document.getElementById('import-btn');
     const importFile = document.getElementById('import-file');
-    const clearBtn = document.getElementById('clear-btn');
     const statusEl = document.getElementById('status');
-    const dataListEl = document.getElementById('data-list');
     let syncRunning = false;
 
     function setSyncRunning(running) {
         syncRunning = running;
         fullSyncBtn.disabled = false;
-        fullSyncBtn.textContent = running ? '⏹ Stop Full Sync' : '🔄 Full Alpha + PnL Sync';
+        fullSyncBtn.textContent = running ? '⏹ Stop Full Sync' : '🔄 Full Submitted Alpha + PnL Sync';
     }
 
     async function databaseAction(action, payload = {}) {
@@ -31,6 +28,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function renderIndexedDbStats() {
         const stats = await databaseAction('GET_STATS');
+        countEl.textContent = stats.prodCorrCount;
         alphaCountEl.textContent = stats.alphaCount;
         pnlCountEl.textContent = stats.pnlCount;
     }
@@ -55,54 +53,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Function to get all ProdMemo data
     async function getStoredData() {
-        const allData = await chrome.storage.local.get(null);
-        const memoData = {};
-        let count = 0;
-
-        for (const [key, value] of Object.entries(allData)) {
-            if (key.startsWith('prod_memo_')) {
-                const alphaId = key.replace('prod_memo_', '');
-                memoData[alphaId] = value;
-                count++;
-            }
-        }
-        return { memoData, count };
-    }
-
-    // Function to render data list
-    async function renderDataList() {
-        const { memoData, count } = await getStoredData();
-        countEl.textContent = count;
-
-        if (count === 0) {
-            dataListEl.innerHTML = '<div class="empty-state">No cached data</div>';
-            return;
-        }
-
-        let html = '';
-        for (const [alphaId, data] of Object.entries(memoData)) {
-            const date = new Date(data.timestamp).toLocaleString('zh-CN', {
-                month: '2-digit',
-                day: '2-digit',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-            const max = data.result?.max !== undefined ? data.result.max.toFixed(4) : 'N/A';
-            const min = data.result?.min !== undefined ? data.result.min.toFixed(4) : 'N/A';
-
-            html += `
-                <div class="data-item">
-                    <div class="alpha-id">${alphaId}</div>
-                    <div class="timestamp">${date}</div>
-                    <div class="values">Max: ${max} | Min: ${min}</div>
-                </div>
-            `;
-        }
-        dataListEl.innerHTML = html;
+        return databaseAction('GET_PROD_CORRS');
     }
 
     // Initialize display
-    await renderDataList();
     try {
         await renderIndexedDbStats();
     } catch (error) {
@@ -178,19 +132,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             const text = await file.text();
             const importedData = JSON.parse(text);
 
-            // Validate and import data
-            let importCount = 0;
-            for (const [alphaId, value] of Object.entries(importedData)) {
-                if (value.timestamp && value.result) {
-                    await chrome.storage.local.set({
-                        [`prod_memo_${alphaId}`]: value
-                    });
-                    importCount++;
-                }
-            }
+            // Preserve the legacy export format while storing records in IndexedDB.
+            const entries = Object.entries(importedData).filter(([, value]) => value?.timestamp && value?.result);
+            const { imported: importCount } = await databaseAction('IMPORT_PROD_CORRS', { entries });
 
             statusEl.textContent = `Imported ${importCount} records.`;
-            await renderDataList();
+            await renderIndexedDbStats();
 
             // Reset file input
             importFile.value = '';
@@ -200,28 +147,4 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // Clear Handler
-    clearBtn.addEventListener('click', async () => {
-        if (confirm('Are you sure you want to delete all cached ProdMemo data?')) {
-            const allData = await chrome.storage.local.get(null);
-            const keysToRemove = Object.keys(allData).filter(k => k.startsWith('prod_memo_'));
-
-            await chrome.storage.local.remove(keysToRemove);
-
-            statusEl.textContent = "All data cleared.";
-            await renderDataList();
-        }
-    });
-
-    clearIndexedDbBtn.addEventListener('click', async () => {
-        if (!confirm('Delete all saved Alpha and PnL data from IndexedDB?')) return;
-
-        try {
-            await databaseAction('CLEAR_INDEXED_DB');
-            syncProgressEl.textContent = 'IndexedDB Alpha and PnL data cleared.';
-            await renderIndexedDbStats();
-        } catch (error) {
-            syncProgressEl.textContent = `IndexedDB clear failed: ${error.message}`;
-        }
-    });
 });

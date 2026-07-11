@@ -1,7 +1,11 @@
+importScripts('corrWorker.js');
+
 const DB_NAME = 'ProdMemoDB';
-const DB_VERSION = 2;
+const DB_VERSION = 4;
+const PROD_MIGRATION_KEY = 'prod_corr_indexeddb_migration_v2';
 
 let dbPromise = null;
+let prodMigrationPromise = null;
 
 function openDatabase() {
     if (dbPromise) return dbPromise;
@@ -24,9 +28,23 @@ function openDatabase() {
             } else {
                 db.createObjectStore('pnls', { keyPath: 'alphaId' });
             }
+
+            if (!db.objectStoreNames.contains('corrResults')) {
+                db.createObjectStore('corrResults', { keyPath: ['alphaId', 'corrType'] });
+            }
+            if (!db.objectStoreNames.contains('prodCorrelations')) {
+                db.createObjectStore('prodCorrelations', { keyPath: 'alphaId' });
+            }
         };
 
-        request.onsuccess = () => resolve(request.result);
+        request.onsuccess = () => {
+            const db = request.result;
+            db.onversionchange = () => {
+                db.close();
+                dbPromise = null;
+            };
+            resolve(db);
+        };
         request.onerror = () => {
             dbPromise = null;
             reject(request.error);
@@ -99,21 +117,25 @@ async function reconcileAlphas(alphaIds) {
 
 async function getStats() {
     const db = await openDatabase();
-    const transaction = db.transaction(['alphas', 'pnls'], 'readonly');
+    const transaction = db.transaction(['alphas', 'pnls', 'prodCorrelations'], 'readonly');
     const alphaCountRequest = transaction.objectStore('alphas').count();
     const pnlCountRequest = transaction.objectStore('pnls').count();
-    const [alphaCount, pnlCount] = await Promise.all([
+    const prodCorrCountRequest = transaction.objectStore('prodCorrelations').count();
+    const [alphaCount, pnlCount, prodCorrCount] = await Promise.all([
         requestResult(alphaCountRequest),
-        requestResult(pnlCountRequest)
+        requestResult(pnlCountRequest),
+        requestResult(prodCorrCountRequest)
     ]);
-    return { alphaCount, pnlCount };
+    return { alphaCount, pnlCount, prodCorrCount };
 }
 
 async function clearIndexedDb() {
     const db = await openDatabase();
-    const transaction = db.transaction(['alphas', 'pnls'], 'readwrite');
+    const transaction = db.transaction(['alphas', 'pnls', 'corrResults', 'prodCorrelations'], 'readwrite');
     transaction.objectStore('alphas').clear();
     transaction.objectStore('pnls').clear();
+    transaction.objectStore('corrResults').clear();
+    transaction.objectStore('prodCorrelations').clear();
     await transactionDone(transaction);
     return { cleared: true };
 }
@@ -141,6 +163,177 @@ async function getIncrementalSyncState() {
     };
 }
 
+async function getCorrResults(alphaId) {
+    const db = await openDatabase();
+    const transaction = db.transaction(['corrResults', 'prodCorrelations'], 'readonly');
+    const store = transaction.objectStore('corrResults');
+    const selfRequest = store.get([alphaId, 'SELF']);
+    const ppaRequest = store.get([alphaId, 'PPA']);
+    const prodRequest = transaction.objectStore('prodCorrelations').get(alphaId);
+    const [self, ppa, prod] = await Promise.all([
+        requestResult(selfRequest),
+        requestResult(ppaRequest),
+        requestResult(prodRequest)
+    ]);
+    return { self: self || null, ppa: ppa || null, prod: prod || null };
+}
+
+function normalizeProdCorrRecord(alphaId, value) {
+    if (!alphaId || !value || typeof value !== 'object') return null;
+    if (value.result && typeof value.result === 'object') {
+        return { alphaId, timestamp: value.timestamp || Date.now(), result: value.result };
+    }
+    return null;
+}
+
+async function ensureLegacyProdMigration() {
+    if (prodMigrationPromise) return prodMigrationPromise;
+    prodMigrationPromise = (async () => {
+        const legacyData = await chrome.storage.local.get(null);
+        const marker = legacyData[PROD_MIGRATION_KEY];
+        const legacyRecords = [];
+        for (const [key, value] of Object.entries(legacyData)) {
+            if (!key.startsWith('prod_memo_')) continue;
+            const alphaId = key.slice('prod_memo_'.length);
+            const record = normalizeProdCorrRecord(alphaId, value);
+            if (record) legacyRecords.push(record);
+        }
+
+        // Old markers did not record the scanned legacy count and must run again.
+        // A matching v2 marker preserves the expected behavior after an intentional IndexedDB clear.
+        if (marker?.completed && marker.legacyCount === legacyRecords.length) return marker;
+
+        const db = await openDatabase();
+        const existingTransaction = db.transaction('prodCorrelations', 'readonly');
+        const existingRecords = await requestResult(existingTransaction.objectStore('prodCorrelations').getAll());
+        const recordsById = new Map();
+        const invalidExistingIds = [];
+
+        for (const value of existingRecords) {
+            const record = normalizeProdCorrRecord(value.alphaId, value);
+            if (record) {
+                recordsById.set(record.alphaId, record);
+            } else if (value?.alphaId) {
+                invalidExistingIds.push(value.alphaId);
+            }
+        }
+        for (const record of legacyRecords) {
+            const alphaId = record.alphaId;
+            const existing = recordsById.get(alphaId);
+            if (!existing || record.timestamp >= existing.timestamp) recordsById.set(alphaId, record);
+        }
+
+        if (recordsById.size > 0 || invalidExistingIds.length > 0) {
+            const transaction = db.transaction('prodCorrelations', 'readwrite');
+            const store = transaction.objectStore('prodCorrelations');
+            invalidExistingIds.forEach(alphaId => store.delete(alphaId));
+            recordsById.forEach(record => store.put(record));
+            await transactionDone(transaction);
+        }
+
+        const result = {
+            completed: true,
+            count: recordsById.size,
+            legacyCount: legacyRecords.length,
+            removedInvalidCount: invalidExistingIds.length,
+            migratedAt: Date.now()
+        };
+        await chrome.storage.local.set({ [PROD_MIGRATION_KEY]: result });
+        return result;
+    })().catch(error => {
+        prodMigrationPromise = null;
+        throw error;
+    });
+    return prodMigrationPromise;
+}
+
+async function saveProdCorr(alphaId, value) {
+    const record = normalizeProdCorrRecord(alphaId, value);
+    if (!record) throw new Error('Invalid Prod Corr record');
+    const db = await openDatabase();
+    const transaction = db.transaction('prodCorrelations', 'readwrite');
+    transaction.objectStore('prodCorrelations').put(record);
+    await transactionDone(transaction);
+    return record;
+}
+
+async function importProdCorrs(entries) {
+    const records = entries
+        .map(([alphaId, value]) => normalizeProdCorrRecord(alphaId, value))
+        .filter(Boolean);
+    if (records.length === 0) return { imported: 0 };
+
+    const db = await openDatabase();
+    const transaction = db.transaction('prodCorrelations', 'readwrite');
+    const store = transaction.objectStore('prodCorrelations');
+    records.forEach(record => store.put(record));
+    await transactionDone(transaction);
+    return { imported: records.length };
+}
+
+async function getProdCorr(alphaId) {
+    const db = await openDatabase();
+    const transaction = db.transaction('prodCorrelations', 'readonly');
+    return (await requestResult(transaction.objectStore('prodCorrelations').get(alphaId))) || null;
+}
+
+async function getProdCorrs(alphaIds = null) {
+    const db = await openDatabase();
+    const transaction = db.transaction('prodCorrelations', 'readonly');
+    const records = await requestResult(transaction.objectStore('prodCorrelations').getAll());
+    const requested = alphaIds ? new Set(alphaIds) : null;
+    const result = {};
+    for (const record of records) {
+        if (!requested || requested.has(record.alphaId)) {
+            result[record.alphaId] = { timestamp: record.timestamp, result: record.result };
+        }
+    }
+    return { memoData: result, count: Object.keys(result).length };
+}
+
+function buildListCorrMemoData(alphaIds, localRecords, prodRecords) {
+    const requested = new Set(alphaIds || []);
+    const valuesByAlpha = new Map();
+
+    const addValue = (alphaId, value) => {
+        if (!requested.has(alphaId) || !Number.isFinite(value)) return;
+        const values = valuesByAlpha.get(alphaId) || [];
+        values.push(value);
+        valuesByAlpha.set(alphaId, values);
+    };
+
+    localRecords.forEach(record => {
+        if (record.corrType === 'SELF' || record.corrType === 'PPA') {
+            addValue(record.alphaId, record.result?.max);
+        }
+    });
+    prodRecords.forEach(record => addValue(record.alphaId, record.result?.max));
+
+    const memoData = {};
+    valuesByAlpha.forEach((values, alphaId) => {
+        memoData[alphaId] = { result: { max: Math.max(...values) } };
+    });
+    return memoData;
+}
+
+async function getListCorrs(alphaIds) {
+    const db = await openDatabase();
+    const transaction = db.transaction(['corrResults', 'prodCorrelations'], 'readonly');
+    const [localRecords, prodRecords] = await Promise.all([
+        requestResult(transaction.objectStore('corrResults').getAll()),
+        requestResult(transaction.objectStore('prodCorrelations').getAll())
+    ]);
+    return { memoData: buildListCorrMemoData(alphaIds, localRecords, prodRecords) };
+}
+
+async function clearProdCorrs() {
+    const db = await openDatabase();
+    const transaction = db.transaction('prodCorrelations', 'readwrite');
+    transaction.objectStore('prodCorrelations').clear();
+    await transactionDone(transaction);
+    return { cleared: true };
+}
+
 async function handleDatabaseAction(action, payload = {}) {
     switch (action) {
         case 'SAVE_ALPHA_BATCH':
@@ -157,6 +350,22 @@ async function handleDatabaseAction(action, payload = {}) {
             return getMissingPnlIds(payload.alphaIds || []);
         case 'GET_INCREMENTAL_SYNC_STATE':
             return getIncrementalSyncState();
+        case 'GET_CORR_RESULTS':
+            return getCorrResults(payload.alphaId);
+        case 'CALCULATE_CORR':
+            return self.ProdMemoCorrCalculator.calculateCorrelation(payload);
+        case 'SAVE_PROD_CORR':
+            return saveProdCorr(payload.alphaId, payload.value);
+        case 'IMPORT_PROD_CORRS':
+            return importProdCorrs(payload.entries || []);
+        case 'GET_PROD_CORR':
+            return getProdCorr(payload.alphaId);
+        case 'GET_PROD_CORRS':
+            return getProdCorrs(payload.alphaIds || null);
+        case 'GET_LIST_CORRS':
+            return getListCorrs(payload.alphaIds || []);
+        case 'CLEAR_PROD_CORRS':
+            return clearProdCorrs();
         default:
             throw new Error(`Unknown database action: ${action}`);
     }
@@ -165,7 +374,8 @@ async function handleDatabaseAction(action, payload = {}) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.type !== 'PROD_MEMO_DB') return false;
 
-    handleDatabaseAction(message.action, message.payload)
+    ensureLegacyProdMigration()
+        .then(() => handleDatabaseAction(message.action, message.payload))
         .then(result => sendResponse({ ok: true, result }))
         .catch(error => {
             console.error('[ProdMemo] IndexedDB action failed:', error);

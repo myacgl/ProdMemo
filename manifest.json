@@ -1,8 +1,8 @@
 {
     "manifest_version": 3,
     "name": "ProdMemo",
-    "version": "1.0",
-    "description": "Caches and displays Prod Correlation results for WorldQuant Brain alphas.",
+    "version": "2.0.0",
+    "description": "Syncs submitted alphas and calculates local correlation for WorldQuant Brain.",
     "permissions": [
         "storage",
         "downloads",

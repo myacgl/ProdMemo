@@ -51,48 +51,6 @@
       cursor: not-allowed;
     }
 
-    .data-list {
-      max-height: 200px;
-      overflow-y: auto;
-      margin-bottom: 10px;
-      background: white;
-      border-radius: 4px;
-      padding: 8px;
-    }
-
-    .data-item {
-      padding: 6px;
-      margin-bottom: 4px;
-      background: #f9f9f9;
-      border-left: 3px solid #00bc8c;
-      border-radius: 3px;
-      font-size: 12px;
-    }
-
-    .data-item .alpha-id {
-      font-weight: bold;
-      color: #00bc8c;
-      word-break: break-all;
-    }
-
-    .data-item .timestamp {
-      font-size: 10px;
-      color: #999;
-    }
-
-    .data-item .values {
-      font-size: 11px;
-      color: #555;
-      margin-top: 2px;
-    }
-
-    .empty-state {
-      text-align: center;
-      color: #999;
-      padding: 20px;
-      font-size: 12px;
-    }
-
     button {
       width: 100%;
       padding: 10px;
@@ -122,16 +80,6 @@
       background-color: #2980b9;
     }
 
-    .btn-clear {
-      background-color: #e74c3c;
-      color: white;
-      margin-top: 5px;
-    }
-
-    .btn-clear:hover {
-      background-color: #c0392b;
-    }
-
     #status {
       margin-top: 10px;
       font-size: 12px;
@@ -146,20 +94,16 @@
   <h3>ProdMemo</h3>
 
   <div class="stats">
-    Records cached: <strong id="record-count">...</strong>
-    <br>IndexedDB Alphas: <strong id="alpha-count">...</strong>
+    Prod Corr records: <strong id="record-count">...</strong>
+    <br>Submitted Alphas: <strong id="alpha-count">...</strong>
     <br>IndexedDB PnLs: <strong id="pnl-count">...</strong>
   </div>
 
   <div id="sync-progress" class="sync-progress">Sync idle.</div>
 
-  <div id="data-list" class="data-list"></div>
-
-  <button id="full-sync-btn" class="btn-sync">🔄 Full Alpha + PnL Sync</button>
-  <button id="export-btn" class="btn-export">📥 Export JSON</button>
-  <button id="import-btn" class="btn-import">📤 Import JSON</button>
-  <button id="clear-btn" class="btn-clear">🗑️ Clear Data</button>
-  <button id="clear-indexeddb-btn" class="btn-clear">🗑️ Clear IndexedDB</button>
+  <button id="full-sync-btn" class="btn-sync">🔄 Full Submitted Alpha + PnL Sync</button>
+  <button id="export-btn" class="btn-export">📥 Export Prod Corr Data</button>
+  <button id="import-btn" class="btn-import">📤 Import Prod Corr Data</button>
   <input type="file" id="import-file" accept=".json" style="display: none;">
   <div id="status"></div>
   <script src="popup.js"></script>

@@ -7,12 +7,15 @@ script.onload = function () {
 (document.head || document.documentElement).appendChild(script);
 
 let currentAlphaId = null;
-let isRendering = false; // Prevent concurrent renders
-let renderTimeout = null; // Debounce timeout
-let activeInterval = null; // Track active retry interval
 let contextValid = true; // Track if extension context is still valid
 let contextWarnedOnce = false; // Track if we've already warned about context invalidation
 let incrementalSyncRunning = false;
+let pendingCorrCalculation = false;
+let corrCalculationRunning = false;
+let loadedCorrAlphaId = null;
+const currentPageAlphas = new Map();
+const currentPagePnls = new Map();
+const currentDataRequests = new Map();
 
 // Detect extension context invalidation
 if (typeof chrome !== 'undefined' && chrome.runtime) {
@@ -71,6 +74,7 @@ window.addEventListener('message', async (event) => {
 
     if (event.data.type === 'PROD_MEMO_SYNC_PROGRESS') {
         updateIncrementalSyncButton(event.data.payload);
+        handleCorrSyncProgress(event.data.payload);
         chrome.runtime.sendMessage({
             type: 'PROD_MEMO_SYNC_PROGRESS',
             payload: event.data.payload
@@ -79,6 +83,36 @@ window.addEventListener('message', async (event) => {
                 console.warn('[ProdMemo] Failed to forward sync progress:', error);
             }
         });
+        return;
+    }
+
+    if (event.data.type === 'PROD_MEMO_CURRENT_ALPHA') {
+        currentPageAlphas.set(event.data.alphaId, event.data.data);
+        if (window.location.pathname.startsWith('/simulate')) selectCurrentAlpha(event.data.alphaId);
+        return;
+    }
+
+    if (event.data.type === 'PROD_MEMO_CURRENT_PNL') {
+        currentPagePnls.set(event.data.alphaId, event.data.data);
+        if (window.location.pathname.startsWith('/simulate')) selectCurrentAlpha(event.data.alphaId);
+        return;
+    }
+
+    if (event.data.type === 'PROD_MEMO_TARGET_ALPHA') {
+        selectCurrentAlpha(event.data.alphaId);
+        return;
+    }
+
+    if (event.data.type === 'PROD_MEMO_CURRENT_DATA_RESPONSE') {
+        const pending = currentDataRequests.get(event.data.requestId);
+        if (!pending) return;
+        currentDataRequests.delete(event.data.requestId);
+        clearTimeout(pending.timeoutId);
+        if (event.data.ok) {
+            pending.resolve(event.data.data);
+        } else {
+            pending.reject(new Error(event.data.error || 'Current Alpha data request failed'));
+        }
         return;
     }
 
@@ -94,23 +128,23 @@ window.addEventListener('message', async (event) => {
             const { alphaId, data } = event.data;
             console.log(`[ProdMemo] Received data for Alpha ${alphaId}`, data);
 
-            const storageKey = `prod_memo_${alphaId}`;
-            await chrome.storage.local.set({
-                [storageKey]: {
+            const record = await databaseAction('SAVE_PROD_CORR', {
+                alphaId,
+                value: {
                     timestamp: Date.now(),
                     result: data
                 }
             });
 
-            console.log(`[ProdMemo] Data saved successfully for ${alphaId}`);
+            console.log(`[ProdMemo] Prod Corr saved to IndexedDB for ${alphaId}`);
 
             // If we are currently viewing this alpha, update the UI immediately
             // Special handle for 'unsubmitted' pages where URL ID hasn't updated yet
             // OR the user just ran a check on the currently open page.
             const currentUrlId = getAlphaFromUrl();
-            if (currentUrlId === alphaId || currentUrlId === 'unsubmitted') {
-                console.log(`[ProdMemo] Triggering immediate render for ${alphaId} (Data Received)`);
-                debouncedRenderMemo(alphaId);
+            if (currentAlphaId === alphaId || currentUrlId === alphaId || currentUrlId === 'unsubmitted') {
+                ensureLocalCorrCards();
+                renderCorrResult('PROD', record);
             }
         } catch (error) {
             if (error.message.includes('Extension context invalidated')) {
@@ -126,15 +160,7 @@ window.addEventListener('message', async (event) => {
     if (event.data.type === 'PROD_MEMO_VIEW') {
         const { alphaId } = event.data;
         console.log(`[ProdMemo] View detected for Alpha ${alphaId}`);
-
-        // If switching to a different alpha, cleanup first
-        if (currentAlphaId && currentAlphaId !== alphaId) {
-            console.log(`[ProdMemo] Switching from ${currentAlphaId} to ${alphaId}`);
-            cleanupCard();
-        }
-
-        currentAlphaId = alphaId;
-        debouncedRenderMemo(alphaId);
+        selectCurrentAlpha(alphaId);
     }
 
     // LIST VIEW TRIGGER (from /users/self/alphas)
@@ -150,9 +176,12 @@ window.addEventListener('message', async (event) => {
             return;
         }
 
-        // Query cached data for all alphas
-        const keys = alphaIds.map(id => `prod_memo_${id}`);
-        chrome.storage.local.get(keys).then(cachedData => {
+        // Query the highest saved Self, PPA, or Prod Corr for each visible Alpha.
+        databaseAction('GET_LIST_CORRS', { alphaIds }).then(({ memoData }) => {
+            const cachedData = {};
+            Object.entries(memoData).forEach(([alphaId, value]) => {
+                cachedData[`prod_memo_${alphaId}`] = value;
+            });
             console.log('[ProdMemo] Retrieved cached data, injecting into list...');
             injectListCorrelations(alphaIds, cachedData);
         }).catch(error => {
@@ -168,7 +197,9 @@ setInterval(() => {
     if (!contextValid) return; // Stop if context is invalid
 
     // Check for both /alpha/ (singular) and /alphas/ (plural)
-    const isOnAlphaPage = window.location.href.includes('/alpha/') || window.location.href.includes('/alphas/');
+    const isOnAlphaPage = window.location.href.includes('/alpha/')
+        || window.location.href.includes('/alphas/')
+        || window.location.href.includes('/simulate');
 
     // Only cleanup when definitively navigating away from alpha pages
     // Be conservative: only cleanup if we're NOT on an alpha page at all
@@ -185,6 +216,7 @@ const titleObserver = new MutationObserver(() => {
         titleElement.setAttribute('title', titleElement.textContent.trim());
     }
     ensureIncrementalSyncButton();
+    ensureLocalCorrCards();
 });
 
 // content.js runs at document_start, when document.body may not exist yet.
@@ -194,32 +226,58 @@ titleObserver.observe(document, {
     subtree: true
 });
 document.addEventListener('DOMContentLoaded', ensureIncrementalSyncButton, { once: true });
+document.addEventListener('DOMContentLoaded', ensureLocalCorrCards, { once: true });
 
 function ensureIncrementalSyncButton() {
-    if (!contextValid || document.getElementById('prod-memo-incremental-sync')) return;
+    if (!contextValid) return;
     const title = document.querySelector('#alphas-correlation .correlation__title');
     if (!title) return;
 
     title.style.display = 'flex';
     title.style.alignItems = 'center';
 
-    const button = document.createElement('button');
-    button.id = 'prod-memo-incremental-sync';
-    button.className = 'prod-memo-sync-button';
-    button.type = 'button';
-    button.textContent = 'Sync Alpha Data';
-    button.addEventListener('click', () => {
-        if (incrementalSyncRunning) {
-            button.textContent = 'Stopping...';
-            window.postMessage({ type: 'PROD_MEMO_STOP_FULL_SYNC' }, '*');
-            return;
-        }
-        incrementalSyncRunning = true;
-        button.classList.add('is-running');
-        button.textContent = 'Checking...';
-        window.postMessage({ type: 'PROD_MEMO_START_INCREMENTAL_SYNC' }, '*');
-    });
-    title.appendChild(button);
+    if (!document.getElementById('prod-memo-incremental-sync')) {
+        const button = document.createElement('button');
+        button.id = 'prod-memo-incremental-sync';
+        button.className = 'prod-memo-sync-button';
+        button.type = 'button';
+        button.textContent = 'Calculate Local Corr';
+        button.addEventListener('click', async () => {
+            if (incrementalSyncRunning) {
+                button.textContent = 'Stopping...';
+                window.postMessage({ type: 'PROD_MEMO_STOP_FULL_SYNC' }, '*');
+                return;
+            }
+            await startCombinedCorrWorkflow();
+        });
+        title.appendChild(button);
+    }
+
+    if (!document.getElementById('prod-memo-all-corr')) {
+        const button = document.createElement('button');
+        button.id = 'prod-memo-all-corr';
+        button.className = 'prod-memo-sync-button';
+        button.type = 'button';
+        button.textContent = 'Calculate All Corr';
+        button.addEventListener('click', async () => {
+            if (incrementalSyncRunning || corrCalculationRunning || pendingCorrCalculation) return;
+            setAllCorrButtonRunning(true);
+            const prodSection = Array.from(
+                document.querySelectorAll('#alphas-correlation .correlation__content')
+            ).find(section => section.querySelector('.correlation__content-status-title')
+                ?.textContent.trim() === 'Prod Correlation');
+            prodSection?.querySelector('.correlation__content-status-time-refresh')?.click();
+            await startCombinedCorrWorkflow(true);
+        });
+        title.appendChild(button);
+    }
+}
+
+function setAllCorrButtonRunning(running) {
+    const button = document.getElementById('prod-memo-all-corr');
+    if (!button) return;
+    button.disabled = running;
+    button.textContent = running ? 'Calculating All...' : 'Calculate All Corr';
 }
 
 function updateIncrementalSyncButton(progress) {
@@ -235,24 +293,268 @@ function updateIncrementalSyncButton(progress) {
     if (progress.phase === 'incremental-completed' || progress.phase === 'error' || progress.phase === 'stopped') {
         incrementalSyncRunning = false;
         button.classList.remove('is-running');
-        button.textContent = progress.phase === 'incremental-completed'
-            ? (progress.added > 0 ? `Synced +${progress.added}` : 'Up to date')
-            : (progress.phase === 'stopped' ? 'Sync stopped' : 'Sync failed');
-        setTimeout(() => {
-            if (!incrementalSyncRunning && button.isConnected) button.textContent = 'Sync Alpha Data';
-        }, 3000);
+        if (!pendingCorrCalculation) {
+            button.textContent = progress.phase === 'incremental-completed'
+                ? 'Calculate Local Corr'
+                : (progress.phase === 'stopped' ? 'Sync stopped' : 'Sync failed');
+        }
     }
 }
 
-ensureIncrementalSyncButton();
+function createCombinedLocalCorrCard() {
+    const card = document.createElement('div');
+    card.id = 'prod-memo-local-corr-card';
+    card.className = 'prod-memo-card prod-memo-local-corr-card';
+    card.innerHTML = `
+        <div class="memo-header">
+            <div class="memo-title-group">
+                <span class="memo-title">⚡ ProdMemo</span>
+                <span class="memo-badge">Correlation</span>
+            </div>
+            <span class="memo-time">Latest saved results</span>
+        </div>
+        <div class="local-corr-columns">
+            <div class="local-corr-column" data-corr-type="SELF">
+                <div class="local-corr-column-title">Self Corr</div>
+                <div class="local-corr-values">
+                    <div><span>Max</span><strong data-field="max">-</strong></div>
+                    <div><span>Min</span><strong data-field="min">-</strong></div>
+                </div>
+                <div class="local-corr-meta">
+                    <span data-field="count">Compared: -</span>
+                    <span data-field="time">Not calculated</span>
+                </div>
+                <div class="local-corr-status" data-field="status">Ready</div>
+            </div>
+            <div class="local-corr-column" data-corr-type="PPA">
+                <div class="local-corr-column-title">PPA Corr</div>
+                <div class="local-corr-values">
+                    <div><span>Max</span><strong data-field="max">-</strong></div>
+                    <div><span>Min</span><strong data-field="min">-</strong></div>
+                </div>
+                <div class="local-corr-meta">
+                    <span data-field="count">Compared: -</span>
+                    <span data-field="time">Not calculated</span>
+                </div>
+                <div class="local-corr-status" data-field="status">Ready</div>
+            </div>
+            <div class="local-corr-column" data-corr-type="PROD">
+                <div class="local-corr-column-title">Prod Corr</div>
+                <div class="local-corr-values">
+                    <div><span>Max</span><strong data-field="max">-</strong></div>
+                    <div><span>Min</span><strong data-field="min">-</strong></div>
+                </div>
+                <div class="local-corr-meta">
+                    <span data-field="count">Source: WQB</span>
+                    <span data-field="time">Not captured</span>
+                </div>
+                <div class="local-corr-status" data-field="status">Waiting for platform query</div>
+            </div>
+        </div>
+    `;
+    return card;
+}
 
-// Initial check on load (in case we missed the Initial Request or it was cached by browser)
-// Actually user said: "Only show card when observing the request". 
-// But if I refresh the page, I will observe the request.
-// If I navigate back, I will observe the request.
-// So this logic holds. 'DOMContentLoaded' might be too early for the request interception, 
-// so we don't need to force render here unless we want to cover the edge case where the script loaded late.
-// Let's stick to the event trigger as requested.
+function ensureLocalCorrCards() {
+    if (!contextValid) return;
+    const title = document.querySelector('#alphas-correlation .correlation__title');
+    if (!title) return;
+    if (!document.getElementById('prod-memo-local-corr-card')) {
+        title.insertAdjacentElement('afterend', createCombinedLocalCorrCard());
+    }
+
+    if (currentAlphaId && loadedCorrAlphaId !== currentAlphaId) {
+        loadCachedCorrResults(currentAlphaId);
+    }
+}
+
+function getLocalCorrPanel(corrType) {
+    return document.querySelector(`#prod-memo-local-corr-card [data-corr-type="${corrType}"]`);
+}
+
+function resetLocalCorrCards() {
+    for (const corrType of ['SELF', 'PPA', 'PROD']) {
+        const panel = getLocalCorrPanel(corrType);
+        if (!panel) continue;
+        panel.querySelector('[data-field="max"]').textContent = '-';
+        panel.querySelector('[data-field="min"]').textContent = '-';
+        panel.querySelector('[data-field="count"]').textContent = corrType === 'PROD' ? 'Source: WQB' : 'Compared: -';
+        panel.querySelector('[data-field="time"]').textContent = corrType === 'PROD' ? 'Not captured' : 'Not calculated';
+        panel.querySelector('[data-field="status"]').textContent = corrType === 'PROD' ? 'Waiting for platform query' : 'Ready';
+    }
+}
+
+function setCorrCardStatus(corrType, text) {
+    const panel = getLocalCorrPanel(corrType);
+    if (!panel) return;
+    panel.querySelector('[data-field="status"]').textContent = text;
+}
+
+function renderCorrResult(corrType, record) {
+    const panel = getLocalCorrPanel(corrType);
+    if (!panel || !record?.result) return;
+    const maxElement = panel.querySelector('[data-field="max"]');
+    const minElement = panel.querySelector('[data-field="min"]');
+    maxElement.textContent = Number(record.result.max).toFixed(4);
+    minElement.textContent = Number(record.result.min).toFixed(4);
+    maxElement.className = record.result.max >= 0.7 ? 'negative' : 'positive';
+    minElement.className = 'positive';
+    if (corrType === 'PROD') {
+        panel.querySelector('[data-field="count"]').textContent = 'Source: WQB';
+        panel.querySelector('[data-field="time"]').textContent = new Date(record.timestamp).toLocaleString();
+        panel.querySelector('[data-field="status"]').textContent = 'Platform result';
+    } else {
+        panel.querySelector('[data-field="count"]').textContent = `Compared: ${record.corrCount ?? '-'}`;
+        panel.querySelector('[data-field="time"]').textContent = new Date(record.calculatedAt).toLocaleString();
+        panel.querySelector('[data-field="status"]').textContent = `Pool: ${record.poolSize ?? '-'}`;
+    }
+}
+
+async function databaseAction(action, payload = {}) {
+    const response = await chrome.runtime.sendMessage({ type: 'PROD_MEMO_DB', action, payload });
+    if (!response?.ok) throw new Error(response?.error || 'IndexedDB request failed');
+    return response.result;
+}
+
+async function loadCachedCorrResults(alphaId) {
+    if (!alphaId || loadedCorrAlphaId === alphaId) return;
+    loadedCorrAlphaId = alphaId;
+    try {
+        const results = await databaseAction('GET_CORR_RESULTS', { alphaId });
+        if (currentAlphaId !== alphaId) return;
+        if (results.self) renderCorrResult('SELF', results.self);
+        if (results.ppa) renderCorrResult('PPA', results.ppa);
+        if (results.prod) renderCorrResult('PROD', results.prod);
+    } catch (error) {
+        loadedCorrAlphaId = null;
+        console.error('[ProdMemo] Failed to load cached Corr results:', error);
+    }
+}
+
+async function startCombinedCorrWorkflow(includePlatformCorr = false) {
+    if (!currentAlphaId) {
+        setCorrCardStatus('SELF', 'Detecting target Alpha...');
+        setCorrCardStatus('PPA', 'Detecting target Alpha...');
+        await waitForCurrentAlphaId(3000);
+    }
+    if (!currentAlphaId) {
+        setCorrCardStatus('SELF', 'Target Alpha unavailable');
+        setCorrCardStatus('PPA', 'Target Alpha unavailable');
+        if (includePlatformCorr) setAllCorrButtonRunning(false);
+        return;
+    }
+    if (corrCalculationRunning || pendingCorrCalculation) {
+        return;
+    }
+
+    pendingCorrCalculation = true;
+    if (includePlatformCorr) setAllCorrButtonRunning(true);
+    setCorrCardStatus('SELF', 'Syncing Alpha data...');
+    setCorrCardStatus('PPA', 'Syncing Alpha data...');
+    if (!incrementalSyncRunning) {
+        incrementalSyncRunning = true;
+        const syncButton = document.getElementById('prod-memo-incremental-sync');
+        syncButton?.classList.add('is-running');
+        if (syncButton) syncButton.textContent = 'Checking...';
+        window.postMessage({ type: 'PROD_MEMO_START_INCREMENTAL_SYNC' }, '*');
+    }
+}
+
+function waitForCurrentAlphaId(timeoutMs) {
+    if (currentAlphaId) return Promise.resolve(currentAlphaId);
+    return new Promise(resolve => {
+        const startedAt = Date.now();
+        const intervalId = setInterval(() => {
+            if (currentAlphaId || Date.now() - startedAt >= timeoutMs) {
+                clearInterval(intervalId);
+                resolve(currentAlphaId);
+            }
+        }, 50);
+    });
+}
+
+function handleCorrSyncProgress(progress) {
+    if (progress?.mode !== 'incremental' || !pendingCorrCalculation) return;
+    if (progress.phase === 'incremental-completed') {
+        pendingCorrCalculation = false;
+        calculateBothLocalCorr();
+    } else if (progress.phase === 'error' || progress.phase === 'stopped') {
+        pendingCorrCalculation = false;
+        setCorrCardStatus('SELF', progress.message || 'Sync failed');
+        setCorrCardStatus('PPA', progress.message || 'Sync failed');
+        const button = document.getElementById('prod-memo-incremental-sync');
+        if (button) button.textContent = 'Calculate Local Corr';
+        setAllCorrButtonRunning(false);
+    }
+}
+
+async function calculateBothLocalCorr() {
+    corrCalculationRunning = true;
+    setCorrCardStatus('SELF', 'Calculating...');
+    setCorrCardStatus('PPA', 'Waiting...');
+    const alphaId = currentAlphaId;
+    const button = document.getElementById('prod-memo-incremental-sync');
+    if (button) button.textContent = 'Calculating Self...';
+
+    try {
+        await ensureCurrentCalculationData(alphaId);
+        for (const corrType of ['SELF', 'PPA']) {
+            setCorrCardStatus(corrType, 'Calculating...');
+            if (button) button.textContent = `Calculating ${corrType}...`;
+            try {
+                const record = await databaseAction('CALCULATE_CORR', {
+                    alphaId,
+                    corrType,
+                    targetAlpha: currentPageAlphas.get(alphaId) || null,
+                    targetPnl: currentPagePnls.get(alphaId) || null
+                });
+                if (currentAlphaId === alphaId) renderCorrResult(corrType, record);
+            } catch (error) {
+                setCorrCardStatus(corrType, error.message || 'Calculation failed');
+                console.error(`[ProdMemo] ${corrType} calculation failed:`, error);
+            }
+        }
+    } catch (error) {
+        setCorrCardStatus('SELF', error.message || 'Calculation failed');
+        setCorrCardStatus('PPA', error.message || 'Calculation failed');
+        console.error('[ProdMemo] Local Corr calculation failed:', error);
+    } finally {
+        corrCalculationRunning = false;
+        setAllCorrButtonRunning(false);
+        if (button) {
+            button.classList.remove('is-running');
+            button.textContent = 'Calculate Local Corr';
+        }
+    }
+}
+
+async function ensureCurrentCalculationData(alphaId) {
+    const needAlpha = !currentPageAlphas.has(alphaId);
+    const needPnl = !currentPagePnls.has(alphaId);
+    if (!needAlpha && !needPnl) return;
+
+    const requestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const data = await new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+            currentDataRequests.delete(requestId);
+            reject(new Error('Timed out while loading current Alpha data'));
+        }, 30000);
+        currentDataRequests.set(requestId, { resolve, reject, timeoutId });
+        window.postMessage({
+            type: 'PROD_MEMO_REQUEST_CURRENT_DATA',
+            requestId,
+            alphaId,
+            needAlpha,
+            needPnl
+        }, '*');
+    });
+
+    if (data.alpha) currentPageAlphas.set(alphaId, data.alpha);
+    if (data.pnl) currentPagePnls.set(alphaId, data.pnl);
+}
+
+ensureIncrementalSyncButton();
+ensureLocalCorrCards();
 
 function getAlphaFromUrl() {
     // Pattern: .../alpha/{alphaID} or .../alphas/{alphaID}
@@ -263,19 +565,19 @@ function getAlphaFromUrl() {
 function cleanupCard() {
     removeExistingMemo();
     currentAlphaId = null;
-    isRendering = false;
+}
 
-    // Clear any pending renders
-    if (renderTimeout) {
-        clearTimeout(renderTimeout);
-        renderTimeout = null;
+function selectCurrentAlpha(alphaId) {
+    if (!alphaId || currentAlphaId === alphaId) return;
+    if (currentAlphaId) {
+        console.log(`[ProdMemo] Switching from ${currentAlphaId} to ${alphaId}`);
+        cleanupCard();
     }
-
-    // Clear any active retry intervals
-    if (activeInterval) {
-        clearInterval(activeInterval);
-        activeInterval = null;
-    }
+    currentAlphaId = alphaId;
+    removeExistingMemo();
+    loadedCorrAlphaId = null;
+    resetLocalCorrCards();
+    ensureLocalCorrCards();
 }
 
 function removeExistingMemo() {
@@ -284,192 +586,6 @@ function removeExistingMemo() {
         console.log('[ProdMemo] Removing existing card');
         existing.remove();
     }
-}
-
-// Debounced render to prevent rapid re-renders
-function debouncedRenderMemo(alphaId) {
-    // Check if extension context is still valid
-    if (!contextValid) return;
-
-    // Clear any pending render
-    if (renderTimeout) {
-        clearTimeout(renderTimeout);
-    }
-
-    // Schedule new render
-    renderTimeout = setTimeout(() => {
-        tryRenderMemo(alphaId);
-    }, 300); // 300ms debounce delay
-}
-
-async function tryRenderMemo(alphaId) {
-    // Check if extension context is still valid - do this FIRST
-    if (!contextValid) {
-        return; // Silent return, context already invalidated
-    }
-
-    try {
-        // Double-check context before making API calls
-        if (!chrome.runtime?.id) {
-            contextValid = false;
-            if (!contextWarnedOnce) {
-                console.warn('[ProdMemo] Extension context lost, stopping operations');
-                contextWarnedOnce = true;
-            }
-            return;
-        }
-
-        // Prevent concurrent renders
-        if (isRendering) {
-            console.log(`[ProdMemo] Already rendering, skipping duplicate request for ${alphaId}`);
-            return;
-        }
-
-        isRendering = true;
-
-        // Clear any existing interval from previous render attempt
-        if (activeInterval) {
-            clearInterval(activeInterval);
-            activeInterval = null;
-        }
-
-        const storageKey = `prod_memo_${alphaId}`;
-        const stored = await chrome.storage.local.get(storageKey);
-        const cachedData = stored[storageKey];
-
-        if (!cachedData) {
-            console.log(`[ProdMemo] No cached data found for Alpha ${alphaId}. Not showing card.`);
-            isRendering = false;
-            return;
-        }
-
-        console.log(`[ProdMemo] Found cached data for ${alphaId}, attempting inject...`);
-
-        // Try immediate injection first
-        const immediateSuccess = injectUI(cachedData);
-        if (immediateSuccess) {
-            console.log('[ProdMemo] UI Injected successfully immediately');
-            isRendering = false;
-            return;
-        }
-
-        // Retry finding the container
-        let attempts = 0;
-        const maxAttempts = 15; // Reduced from 20
-        activeInterval = setInterval(() => {
-            attempts++;
-            const success = injectUI(cachedData);
-            if (success) {
-                console.log('[ProdMemo] UI Injected successfully on attempt ' + attempts);
-                clearInterval(activeInterval);
-                activeInterval = null;
-                isRendering = false;
-            } else if (attempts >= maxAttempts) {
-                console.log('[ProdMemo] Failed to find UI insertion point after max retries');
-                clearInterval(activeInterval);
-                activeInterval = null;
-                isRendering = false;
-            }
-        }, 500);
-    } catch (error) {
-        // Only log if it's NOT a context invalidation error
-        if (error.message && error.message.includes('Extension context invalidated')) {
-            contextValid = false;
-            // Silent - no console output to avoid spam
-        } else {
-            console.error('[ProdMemo] Error in tryRenderMemo:', error);
-        }
-        isRendering = false;
-        if (activeInterval) {
-            clearInterval(activeInterval);
-            activeInterval = null;
-        }
-    }
-}
-
-function injectUI(cachedData) {
-    if (document.getElementById('prod-memo-card')) return true;
-
-    // Finding injection target - look for "Prod Correlation" section
-    // First try: Find by specific selector for the correlation content section
-    let targetContainer = document.querySelector('.correlation__content');
-
-    if (targetContainer) {
-        // Find the one that contains "Prod Correlation"
-        const correlationSections = document.querySelectorAll('.correlation__content');
-        for (const section of correlationSections) {
-            if (section.textContent.includes('Prod Correlation')) {
-                targetContainer = section;
-                console.log('[ProdMemo] Found Prod Correlation section by class selector');
-                break;
-            }
-        }
-    }
-
-    // Fallback: Search by text content
-    if (!targetContainer || !targetContainer.textContent.includes('Prod Correlation')) {
-        console.log('[ProdMemo] Trying fallback text search...');
-        const allElements = Array.from(document.body.querySelectorAll('*'));
-        const targetHeader = allElements.find(el => {
-            if (!el.innerText) return false;
-            if (el.offsetParent === null) return false; // Check visibility
-
-            const text = el.innerText.toLowerCase();
-            const matches = text.includes('prod correlation') || text.includes('production correlation');
-            if (!matches) return false;
-
-            if (el.closest('#prod-memo-card')) return false;
-
-            // Accept elements with "Prod Correlation" text, even if they're large
-            return el.tagName === 'SPAN' || el.classList.contains('correlation__content-status-title') || el.innerText.length < 100;
-        });
-
-        if (targetHeader) {
-            // Find the parent content section
-            targetContainer = targetHeader.closest('.correlation__content') || targetHeader.closest('.correlation__content-status') || targetHeader.parentElement;
-            console.log('[ProdMemo] Found target via text search');
-        }
-    }
-
-    if (!targetContainer) {
-        console.warn('[ProdMemo] Could not find Prod Correlation section');
-        return false;
-    }
-
-    // Build UI
-    const card = document.createElement('div');
-    card.id = 'prod-memo-card';
-    card.className = 'prod-memo-card';
-
-    const maxVal = cachedData.result.max !== undefined ? cachedData.result.max.toFixed(4) : 'N/A';
-    const minVal = cachedData.result.min !== undefined ? cachedData.result.min.toFixed(4) : 'N/A';
-    const dateStr = new Date(cachedData.timestamp).toLocaleString();
-
-    card.innerHTML = `
-        <div class="memo-header">
-            <div class="memo-title-group">
-                <span class="memo-title">⚡ ProdMemo</span>
-                <span class="memo-badge">Cached</span>
-            </div>
-            <span class="memo-time">${dateStr}</span>
-        </div>
-        
-        <div class="memo-stats">
-            <div class="stat-item">
-                <div class="stat-label">Max Correlation</div>
-                <div class="stat-value ${parseFloat(maxVal) > 0.7 ? 'negative' : 'positive'}">${maxVal}</div>
-            </div>
-            <div class="stat-item">
-                <div class="stat-label">Min Correlation</div>
-                <div class="stat-value ${parseFloat(minVal) < -0.7 ? 'negative' : 'positive'}">${minVal}</div>
-            </div>
-        </div>
-    `;
-
-    // Append to the correlation content container
-    targetContainer.appendChild(card);
-    console.log('[ProdMemo] Card injected successfully');
-    return true;
 }
 
 // ========== LIST VIEW INJECTION ==========
@@ -505,7 +621,7 @@ function injectListCorrelationsOnce(alphaIds, cachedData) {
         return false;
     }
 
-    // Find and replace Book Size header with Max Prod Corr
+    // Find and replace Book Size header with Max Corr
     // DEBUG: Log all headers to find Book Size
     console.log('[ProdMemo] Exploring header structure...');
     const allHeaders = headerGroups.querySelectorAll('.rt-th');
@@ -536,7 +652,7 @@ function injectListCorrelationsOnce(alphaIds, cachedData) {
     if (bookSizeHeader && !bookSizeHeader.classList.contains('prod-corr-replaced')) {
         // Find the parent div that contains the sort element
         const sortDiv = bookSizeHeader;
-        sortDiv.textContent = 'Max Prod Corr';
+        sortDiv.textContent = 'Max Corr';
         sortDiv.style.fontWeight = '600';
         sortDiv.style.color = '#fff';
         sortDiv.classList.add('prod-corr-replaced');
@@ -614,7 +730,7 @@ function createListHeaderCell() {
 
     cell.innerHTML = `
         <div class="rt-resizable-header-content">
-            <div style="font-weight: 600;color:#fff">Max Prod Corr</div>
+            <div style="font-weight: 600;color:#fff">Max Corr</div>
         </div>
     `;
 

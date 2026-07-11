@@ -94,8 +94,55 @@
 
         if (event.data?.type === 'PROD_MEMO_STOP_FULL_SYNC' && syncRunning) {
             syncAbortController?.abort();
+            return;
+        }
+
+        if (event.data?.type === 'PROD_MEMO_REQUEST_CURRENT_DATA') {
+            const { requestId, alphaId, needAlpha, needPnl } = event.data;
+            fetchCurrentCalculationData(alphaId, { needAlpha, needPnl })
+                .then(data => window.postMessage({
+                    type: 'PROD_MEMO_CURRENT_DATA_RESPONSE',
+                    requestId,
+                    ok: true,
+                    data
+                }, '*'))
+                .catch(error => window.postMessage({
+                    type: 'PROD_MEMO_CURRENT_DATA_RESPONSE',
+                    requestId,
+                    ok: false,
+                    error: error.message || String(error)
+                }, '*'));
         }
     });
+
+    async function fetchCurrentCalculationData(alphaId, options) {
+        const result = {};
+
+        if (options.needAlpha) {
+            const response = await originalFetch(`https://api.worldquantbrain.com/alphas/${encodeURIComponent(alphaId)}`, {
+                headers: { accept: 'application/json;version=4.0' },
+                credentials: 'include'
+            });
+            if (!response.ok) throw new Error(`Current Alpha HTTP ${response.status}`);
+            result.alpha = await response.json();
+        }
+
+        if (options.needPnl) {
+            let pnl = null;
+            for (let attempt = 0; attempt < 4 && !pnl; attempt++) {
+                const response = await requestPnlOnce(alphaId);
+                if (response.ready) {
+                    pnl = response.data;
+                    break;
+                }
+                await delay(PNL_RETRY_DELAYS_MS[Math.min(attempt, PNL_RETRY_DELAYS_MS.length - 1)]);
+            }
+            if (!pnl) throw new Error('Current Alpha PnL was not available after retries');
+            result.pnl = pnl;
+        }
+
+        return result;
+    }
 
     async function fetchAlphaPage(offset, signal, limit = ALPHA_PAGE_LIMIT) {
         const query = new URLSearchParams({
@@ -436,6 +483,18 @@
 
     window.fetch = async function (...args) {
         // console.log('[ProdMemo] Fetch called', args[0]); // Optional: noisy
+        const requestUrl = typeof args[0] === 'string' || args[0] instanceof URL
+            ? String(args[0])
+            : args[0]?.url;
+        if (window.location.pathname.startsWith('/simulate') && requestUrl) {
+            const targetMatch = requestUrl.match(/\/alphas\/([^/?#]+)/);
+            if (targetMatch) {
+                window.postMessage({
+                    type: 'PROD_MEMO_TARGET_ALPHA',
+                    alphaId: targetMatch[1]
+                }, '*');
+            }
+        }
         const response = await originalFetch.apply(this, args);
 
         try {
@@ -484,6 +543,42 @@
                 } else {
                     console.warn('[ProdMemo] URL matched includes string but failed regex match');
                 }
+            }
+
+            // Capture the currently opened Alpha's PnL in memory for local Corr calculation.
+            const pnlMatch = url.match(/\/alphas\/([^/]+)\/recordsets\/pnl(?:[?#]|$)/);
+            if (pnlMatch && response.ok && response.status !== 202 && response.status !== 204) {
+                const alphaId = pnlMatch[1];
+                response.clone().text().then(text => {
+                    if (!text.trim()) return;
+                    const data = JSON.parse(text);
+                    if (!Array.isArray(data.records)) return;
+                    window.postMessage({
+                        type: 'PROD_MEMO_CURRENT_PNL',
+                        alphaId,
+                        data
+                    }, '*');
+                }).catch(error => {
+                    console.warn(`[ProdMemo] Failed to capture current PnL for ${alphaId}:`, error);
+                });
+            }
+
+            // Capture current Alpha metadata, including region and classifications.
+            const alphaDetailMatch = url.match(/\/alphas\/([^/]+)\/?(?:[?#]|$)/);
+            if (alphaDetailMatch && response.ok && response.status !== 204) {
+                const alphaId = alphaDetailMatch[1];
+                response.clone().text().then(text => {
+                    if (!text.trim()) return;
+                    const data = JSON.parse(text);
+                    if (data?.id !== alphaId) return;
+                    window.postMessage({
+                        type: 'PROD_MEMO_CURRENT_ALPHA',
+                        alphaId,
+                        data
+                    }, '*');
+                }).catch(error => {
+                    console.warn(`[ProdMemo] Failed to capture current Alpha metadata for ${alphaId}:`, error);
+                });
             }
 
             // 2. Intercept Alpha Page Load (Recordsets) to trigger UI check

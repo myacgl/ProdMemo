@@ -1,158 +1,157 @@
-# ProdMemo - Chrome Extension for WorldQuant Brain
+# ProdMemo
 
-A Chrome extension that caches and displays Production Correlation data for WorldQuant Brain alphas, making it easier to track and analyze alpha performance.
+English | [简体中文](README_zh.md)
+
+ProdMemo is an unofficial Chrome extension for WorldQuant BRAIN. It keeps submitted Alpha and PnL data in IndexedDB, calculates Self and Power Pool correlation locally, and caches Production Correlation returned by the platform.
 
 ## Features
 
-### 📊 Alpha Detail View
-- **Cached Correlation Card**: Displays max/min prod correlation values on alpha detail pages
-- **Timestamp Tracking**: Shows when correlation data was last cached
-- **Visual Indicators**: Color-coded values (red for high correlation, green for low)
+### Correlation on Alpha detail pages
 
-### 📋 List View Enhancement
-- **Smart Column Replacement**: Replaces the "Book Size" column with "Max Prod Corr" in unsubmitted alpha lists
-- **Automatic Detection**: Only replaces columns when appropriate (unsubmitted alphas)
-- **Color Coding**: 
-  - 🔴 Red: High correlation (>0.7) - potential concern
-  - 🟠 Orange: Medium correlation (>0.5)
-  - 🟢 Green: Low correlation - good for diversification
+- A unified **ProdMemo** card displays the latest local Self Corr, local PPA Corr, and platform Prod Corr results.
+- **Calculate Local Corr** synchronizes newly submitted Alphas when needed, then calculates local Self and PPA correlation.
+- **Calculate All Corr** refreshes the platform's **Prod Correlation** result first, then runs the same local calculations.
+- The latest result for each Alpha is stored and restored when the Alpha page is opened again.
+- PPA candidates must be in the same region and contain the `POWER_POOL:POWER_POOL_ELIGIBLE` classification.
 
-### 💾 Data Management
-- **Automatic Caching**: Intercepts prod correlation API requests and stores results
-- **Persistent Storage**: Uses Chrome's local storage for data persistence
-- **Export Functionality**: Export cached data as JSON via popup interface
+### Alpha and PnL synchronization
+
+- **Full Submitted Alpha + PnL Sync** in the popup downloads every submitted Alpha and its PnL.
+- Alpha pages are fetched in batches of up to 100.
+- PnL requests use bounded concurrency, warm-up passes, and a final retry pass to reduce omissions.
+- Synchronization reports progress, successes, and failures, and can be stopped from the same popup button.
+- Incremental synchronization checks for newly submitted Alphas before a local calculation.
+
+### Production Correlation cache
+
+- Platform Prod Corr responses are intercepted and saved automatically.
+- The unsubmitted Alpha list replaces **Book Size** with **Max Corr**, the highest saved Self, PPA, or Prod correlation.
+- Prod Corr records can be imported and exported from the popup.
+
+### Local data management
+
+ProdMemo uses the `ProdMemoDB` IndexedDB database with separate stores for:
+
+- submitted Alpha metadata;
+- Alpha PnL time series;
+- latest local Self/PPA results;
+- platform Production Correlation results.
+
+The popup shows Prod Corr, submitted Alpha, and PnL record counts without rendering the full Prod Corr list.
 
 ## Installation
 
-### From Source
+1. Download or clone this repository.
+2. Open `chrome://extensions/` in Chrome.
+3. Enable **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the `ProdMemo` directory.
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/yourusername/ProdMemo.git
-   ```
+ProdMemo must run on a logged-in `*.worldquantbrain.com` page because Alpha and PnL requests use the active platform session.
 
-2. Open Chrome and navigate to `chrome://extensions/`
+## Upgrading from v1
 
-3. Enable "Developer mode" (toggle in top right)
+Chrome storage is isolated by extension ID. To retain the old v1 Prod Corr cache, replace the files in the directory previously loaded by Chrome and reload that existing extension. Loading the new files from a different path usually creates another unpacked extension ID, which cannot read the old extension's storage.
 
-4. Click "Load unpacked" and select the `ProdMemo` directory
+On first startup under the same extension ID, valid legacy `prod_memo_{alphaId}` records in `chrome.storage.local` are copied into the new IndexedDB Prod Corr store. The legacy records are left untouched.
 
-5. The extension icon should appear in your toolbar
+If the extension ID has already changed, export the old extension's Prod Corr JSON and import it through the new extension popup.
+
+Before upgrading or clearing browser data, exporting a backup is recommended.
 
 ## Usage
 
-### Viewing Cached Correlations
+### Initial synchronization
 
-1. Navigate to any alpha detail page on WorldQuant Brain
-2. Run a Production Correlation check
-3. The ProdMemo card will automatically appear below the correlation section
-4. Cached data persists across sessions
+1. Open a WorldQuant BRAIN page and sign in.
+2. Open the ProdMemo popup.
+3. Click **Full Submitted Alpha + PnL Sync**.
+4. Keep the WQB tab open until the two-stage Alpha and PnL synchronization finishes.
 
-### List View
+Run a full synchronization again when WQB expands historical PnL periods, such as after an `endDate` update.
 
-1. Navigate to the unsubmitted alphas list
-2. The "Book Size" column will be replaced with "Max Prod Corr" values
-3. Values are color-coded for quick assessment
+### Calculate correlation
 
-### Managing Data
+1. Open an Alpha detail page and wait for its Correlation section to appear.
+2. Click **Calculate Local Corr** to calculate local Self and PPA correlation only.
+3. Click **Calculate All Corr** to refresh platform Prod Corr and calculate both local results in one operation.
 
-1. Click the ProdMemo extension icon in the toolbar
-2. View the number of cached alphas
-3. Export all cached data as JSON
-4. Clear all cached data if needed
+### Import and export
 
-## Technical Details
+The popup exports and imports Prod Corr records using the legacy-compatible JSON shape:
 
-### Architecture
-
-- **`manifest.json`**: Extension configuration
-- **`content.js`**: Main content script for DOM manipulation and data handling
-- **`inject.js`**: Injected script for API interception (main world context)
-- **`popup.html/js`**: Extension popup interface
-- **`styles.css`**: Styling for injected elements
-
-### API Interception
-
-The extension intercepts the following WorldQuant Brain API endpoints:
-
-- `/alphas/{alphaID}/correlations/prod` - Production correlation data
-- `/alphas/{alphaID}/recordsets` - Alpha page view detection
-- `/users/self/alphas` - Alpha list data
-
-### Storage Format
-
-Cached data is stored in Chrome's local storage with the key format:
-```
-prod_memo_{alphaId}: {
-  timestamp: <unix_timestamp>,
-  result: {
-    max: <number>,
-    min: <number>
+```json
+{
+  "alphaId": {
+    "timestamp": 1760000000000,
+    "result": {
+      "max": 0.7012,
+      "min": -0.2456
+    }
   }
 }
 ```
 
-## Browser Compatibility
+## Architecture
 
-- **Chrome**: ✅ Tested and supported
-- **Chromium-based browsers**: ✅ Should work (Edge, Brave, etc.)
-- **Firefox**: ❌ Not supported (uses Chrome Extension Manifest V3)
+| File | Responsibility |
+| --- | --- |
+| `manifest.json` | Manifest V3 extension configuration |
+| `inject.js` | WQB-page API interception and authenticated synchronization |
+| `content.js` | Page controls, unified correlation card, and list enhancement |
+| `background.js` | IndexedDB access, migration, and message handling |
+| `corrWorker.js` | Local correlation calculation |
+| `popup.html`, `popup.js` | Synchronization and data-management interface |
+| `styles.css` | Injected page styles |
 
-## Privacy & Security
+## Privacy and security
 
-- All data is stored locally in your browser
-- No external servers or third-party services
-- Only operates on `*.worldquantbrain.com` domains
-- No personal data collection
+- All cached data and calculations remain in the local browser profile.
+- ProdMemo does not use an external server or send data to a third party.
+- The extension only operates on WorldQuant BRAIN domains.
+- Clearing the browser profile or IndexedDB permanently removes local data unless it has been exported.
+
+## Browser compatibility
+
+- Chrome: supported
+- Other Chromium browsers: expected to work, but not actively tested
+- Firefox: not supported
 
 ## Development
 
-### File Structure
+After changing the source files, reload ProdMemo from `chrome://extensions/`, refresh the WQB tab, and inspect page-console messages prefixed with `[ProdMemo]`.
 
-```
-ProdMemo/
-├── manifest.json          # Extension manifest
-├── content.js            # Content script (isolated world)
-├── inject.js             # Injected script (main world)
-├── popup.html            # Extension popup UI
-├── popup.js              # Popup logic
-├── styles.css            # Injected styles
-└── README.md             # This file
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and testing checklist.
 
-### Debugging
+## Known limitations
 
-1. Open Chrome DevTools (F12) on any WorldQuant Brain page
-2. Look for console messages prefixed with `[ProdMemo]`
-3. Common issues:
-   - **Card not showing**: Check if correlation data was cached
-   - **List not updating**: Refresh the page after loading extension
-   - **Extension context invalidated**: Reload the extension
-
-## Known Limitations
-
-- Only works on WorldQuant Brain platform
-- Requires manual correlation checks to populate cache
-- Book Size column replacement only works on unsubmitted alpha lists
-- Extension must be reloaded after updates
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## License
-
-MIT License - see LICENSE file for details
-
-## Disclaimer
-
-This is an unofficial extension and is not affiliated with or endorsed by WorldQuant LLC. Use at your own discretion.
+- An authenticated WQB page must remain open during synchronization.
+- Platform API rate limits or temporary empty PnL responses can make synchronization slower.
+- Local correlation is a browser-side reproduction and may differ slightly if WQB changes its calculation rules or source data.
+- Unpacked-extension data is tied to its Chrome extension ID.
 
 ## Changelog
 
+### v2.0.0 (2026-07-10)
+
+- Moved active Prod Corr storage and data management to IndexedDB.
+- Added safe migration of valid legacy Prod Corr records without deleting the originals.
+- Added full and incremental submitted-Alpha synchronization.
+- Added PnL synchronization with batching, concurrency control, warm-up, retry, progress, and stop support.
+- Added local Self and same-region Power Pool correlation calculations.
+- Added the unified Self/PPA/Prod result card with latest-result restoration.
+- Added **Calculate Local Corr** and **Calculate All Corr** page actions.
+
 ### v1.0.0 (2026-01-13)
-- Initial release
-- Cached correlation display on detail pages
-- Book Size column replacement in lists
-- Data export functionality
-- Color-coded correlation indicators
+
+- Added Production Correlation capture and detail-page display.
+- Added the Max Corr list column.
+- Added JSON export and color-coded correlation indicators.
+
+## License
+
+MIT License. See `LICENSE` for details.
+
+## Disclaimer
+
+ProdMemo is not affiliated with or endorsed by WorldQuant LLC. Use it at your own discretion.
