@@ -170,12 +170,17 @@ async function getCorrResults(alphaId) {
     const selfRequest = store.get([alphaId, 'SELF']);
     const ppaRequest = store.get([alphaId, 'PPA']);
     const prodRequest = transaction.objectStore('prodCorrelations').get(alphaId);
-    const [self, ppa, prod] = await Promise.all([
+    const [selfResult, ppa, prod] = await Promise.all([
         requestResult(selfRequest),
         requestResult(ppaRequest),
         requestResult(prodRequest)
     ]);
-    return { self: self || null, ppa: ppa || null, prod: prod || null };
+    const currentAlgorithmVersion = self.ProdMemoCorrCalculator.algorithmVersion;
+    return {
+        self: selfResult?.algorithmVersion === currentAlgorithmVersion ? selfResult : null,
+        ppa: ppa || null,
+        prod: prod || null
+    };
 }
 
 function normalizeProdCorrRecord(alphaId, value) {
@@ -303,6 +308,8 @@ function buildListCorrMemoData(alphaIds, localRecords, prodRecords) {
     };
 
     localRecords.forEach(record => {
+        if (record.corrType === 'SELF'
+            && record.algorithmVersion !== self.ProdMemoCorrCalculator.algorithmVersion) return;
         if (record.corrType === 'SELF' || record.corrType === 'PPA') {
             addValue(record.alphaId, record.result?.max);
         }
