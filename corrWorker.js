@@ -1,7 +1,7 @@
 (() => {
 const DB_NAME = 'ProdMemoDB';
 const DB_VERSION = 4;
-const ALGORITHM_VERSION = 2;
+const ALGORITHM_VERSION = 3;
 const YEARS = 4;
 const POWER_POOL_CLASSIFICATION = 'POWER_POOL:POWER_POOL_ELIGIBLE';
 
@@ -147,7 +147,7 @@ function isPowerPoolAlpha(alpha) {
 function selectPool(alphas, pnlById, alphaId, region, corrType) {
     return alphas.filter(alpha => {
         if (alpha.id === alphaId || alpha.settings?.region !== region || !pnlById.has(alpha.id)) return false;
-        if (corrType === 'SELF') return alpha.stage === 'OS' && !isPowerPoolAlpha(alpha);
+        if (corrType === 'SELF') return alpha.stage === 'OS';
         if (corrType === 'PPA') return isPowerPoolAlpha(alpha);
         return false;
     });
