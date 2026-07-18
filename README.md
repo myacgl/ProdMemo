@@ -13,7 +13,7 @@ ProdMemo is an unofficial Chrome extension for WorldQuant BRAIN. It keeps submit
 - **Calculate All Corr** refreshes the platform's **Prod Correlation** result first, then runs the same local calculations.
 - The latest result for each Alpha is stored and restored when the Alpha page is opened again.
 - PPA candidates must be in the same region and contain the `POWER_POOL:POWER_POOL_ELIGIBLE` classification.
-- Self Corr candidates include eligible OS Alphas even when they are also Power Pool Eligible.
+- A Power Pool Eligible Alpha can enter the Self Corr pool only when it also has the `REGULAR:REGULAR` classification.
 
 ### Alpha and PnL synchronization
 
@@ -132,6 +132,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the development and testing checklist
 - Unpacked-extension data is tied to its Chrome extension ID.
 
 ## Changelog
+
+### v2.0.3 (2026-07-18)
+
+- Required Power Pool Eligible Self Corr candidates to also have the `REGULAR:REGULAR` classification.
+- Kept short-history Alphas eligible; no `startDate/endDate` duration filter is applied.
+- Invalidated cached Self/PPA results produced by previous pool rules.
 
 ### v2.0.2 (2026-07-17)
 

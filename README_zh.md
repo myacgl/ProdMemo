@@ -13,7 +13,7 @@ ProdMemo 是一个非官方的 WorldQuant BRAIN Chrome 扩展。它使用 Indexe
 - **Calculate All Corr** 会先刷新平台的 **Prod Correlation**，再执行相同的本地计算。
 - 每个 Alpha 的最新计算结果都会保存，再次打开该 Alpha 页面时会自动显示。
 - PPA 对比池仅包含相同 Region，并具有 `POWER_POOL:POWER_POOL_ELIGIBLE` classification 的 Alpha。
-- Self Corr 对比池包含符合条件的 OS Alpha，即使它同时属于 Power Pool Eligible Alpha。
+- Power Pool Eligible Alpha 只有同时具有 `REGULAR:REGULAR` classification 时，才能进入 Self Corr 对比池。
 
 ### 已提交 Alpha 和 PnL 同步
 
@@ -132,6 +132,12 @@ Popup 使用兼容旧版本的 JSON 格式导入和导出 Prod Corr：
 - 解压加载的扩展数据与 Chrome 扩展 ID 绑定。
 
 ## 更新记录
+
+### v2.0.3（2026-07-18）
+
+- Power Pool Eligible Alpha 必须同时具有 `REGULAR:REGULAR` classification 才能进入 SELF 池。
+- 保留历史区间较短的 Alpha，不再检查 `startDate/endDate` 时间跨度。
+- 旧池规则生成的 SELF/PPA 缓存不再作为最新结果显示。
 
 ### v2.0.2（2026-07-17）
 

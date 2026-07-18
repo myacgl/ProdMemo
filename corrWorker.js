@@ -1,9 +1,10 @@
 (() => {
 const DB_NAME = 'ProdMemoDB';
 const DB_VERSION = 4;
-const ALGORITHM_VERSION = 3;
+const ALGORITHM_VERSION = 4;
 const YEARS = 4;
 const POWER_POOL_CLASSIFICATION = 'POWER_POOL:POWER_POOL_ELIGIBLE';
+const REGULAR_CLASSIFICATION = 'REGULAR:REGULAR';
 
 const RESULT_PROPERTIES = [
     { name: 'id', title: 'Id', type: 'string' },
@@ -144,10 +145,20 @@ function isPowerPoolAlpha(alpha) {
     );
 }
 
+function isRegularAlpha(alpha) {
+    return (alpha.classifications || []).some(item =>
+        (item?.id || item) === REGULAR_CLASSIFICATION
+    );
+}
+
 function selectPool(alphas, pnlById, alphaId, region, corrType) {
     return alphas.filter(alpha => {
-        if (alpha.id === alphaId || alpha.settings?.region !== region || !pnlById.has(alpha.id)) return false;
-        if (corrType === 'SELF') return alpha.stage === 'OS';
+        if (alpha.id === alphaId
+            || alpha.settings?.region !== region
+            || !pnlById.has(alpha.id)) return false;
+        if (corrType === 'SELF') {
+            return alpha.stage === 'OS' && (!isPowerPoolAlpha(alpha) || isRegularAlpha(alpha));
+        }
         if (corrType === 'PPA') return isPowerPoolAlpha(alpha);
         return false;
     });
@@ -268,6 +279,7 @@ self.ProdMemoCorrCalculator = {
         calculateForwardFilledReturns,
         pearson,
         isPowerPoolAlpha,
+        isRegularAlpha,
         selectPool,
         resultSchema,
         roundOfficial,

@@ -178,7 +178,7 @@ async function getCorrResults(alphaId) {
     const currentAlgorithmVersion = self.ProdMemoCorrCalculator.algorithmVersion;
     return {
         self: selfResult?.algorithmVersion === currentAlgorithmVersion ? selfResult : null,
-        ppa: ppa || null,
+        ppa: ppa?.algorithmVersion === currentAlgorithmVersion ? ppa : null,
         prod: prod || null
     };
 }
@@ -308,7 +308,7 @@ function buildListCorrMemoData(alphaIds, localRecords, prodRecords) {
     };
 
     localRecords.forEach(record => {
-        if (record.corrType === 'SELF'
+        if ((record.corrType === 'SELF' || record.corrType === 'PPA')
             && record.algorithmVersion !== self.ProdMemoCorrCalculator.algorithmVersion) return;
         if (record.corrType === 'SELF' || record.corrType === 'PPA') {
             addValue(record.alphaId, record.result?.max);
